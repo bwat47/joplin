@@ -36,12 +36,16 @@ class ImageWidget extends WidgetType {
 
 		image.alt = this.alt_;
 
-		// Apply width and height if specified
+		// Apply width and height if specified, otherwise clear them
 		if (this.width_) {
 			image.style.width = this.width_;
+		} else {
+			image.style.width = '';
 		}
 		if (this.height_) {
 			image.style.height = this.height_;
+		} else {
+			image.style.height = '';
 		}
 
 		const updateImageUrl = () => {
