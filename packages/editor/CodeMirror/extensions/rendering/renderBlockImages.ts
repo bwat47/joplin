@@ -36,16 +36,25 @@ class ImageWidget extends WidgetType {
 
 		image.alt = this.alt_;
 
-		// Apply width and height if specified, otherwise clear them
-		if (this.width_) {
-			image.style.width = this.width_;
+		// Apply width and height if specified
+		// Always ensure max-width and height:auto for responsive scaling
+		if (this.width_ || this.height_) {
+			// Set explicit dimensions
+			image.style.width = this.width_ || 'auto';
+			image.style.height = this.height_ || 'auto';
+			// But ensure they scale down responsively and maintain aspect ratio
+			image.style.maxWidth = '100%';
+			image.style.maxHeight = 'none';
+			// When width scales down, height should scale proportionally
+			if (this.width_ && this.height_) {
+				image.style.height = 'auto';
+			}
 		} else {
+			// No explicit dimensions - use CSS defaults
 			image.style.width = '';
-		}
-		if (this.height_) {
-			image.style.height = this.height_;
-		} else {
 			image.style.height = '';
+			image.style.maxWidth = '';
+			image.style.maxHeight = '';
 		}
 
 		const updateImageUrl = () => {
@@ -172,6 +181,10 @@ const renderBlockImages = (context: RenderedContentContext) => [
 			display: 'block',
 			textAlign: 'center',
 			margin: '0.5em 0',
+			paddingLeft: '10px',
+			paddingRight: '10px',
+			maxWidth: '100%',
+			boxSizing: 'border-box',
 		},
 		[`& .${imageClassName} > img`]: {
 			maxWidth: '100%',
