@@ -13,6 +13,9 @@ const estimatedImageHeight = 200;
 class ImageWidget extends WidgetType {
 	private resolvedSrc_: string;
 
+	private readonly parsedWidthPx_: number | null;
+	private readonly parsedHeightPx_: number | null;
+
 	public constructor(
 		private readonly context_: RenderedContentContext,
 		private readonly src_: string,
@@ -22,6 +25,9 @@ class ImageWidget extends WidgetType {
 		private readonly reloadCounter_ = 0,
 	) {
 		super();
+
+		this.parsedWidthPx_ = ImageWidget.parsePixelSize_(this.width_);
+		this.parsedHeightPx_ = ImageWidget.parsePixelSize_(this.height_);
 	}
 
 	public eq(other: ImageWidget) {
@@ -35,27 +41,38 @@ class ImageWidget extends WidgetType {
 		if (!image) return false;
 
 		image.alt = this.alt_;
+		image.removeAttribute('width');
+		image.removeAttribute('height');
+		image.style.maxWidth = '';
+		image.style.maxHeight = '';
+		image.style.width = '';
+		image.style.height = '';
 
-		// Apply width and height if specified
-		// Always ensure max-width and height:auto for responsive scaling
-		if (this.width_ || this.height_) {
-			// Set explicit dimensions
-			image.style.width = this.width_ || 'auto';
-			image.style.height = this.height_ || 'auto';
-			// But ensure they scale down responsively and maintain aspect ratio
+		if (this.parsedWidthPx_ !== null && this.parsedHeightPx_ !== null) {
+			// Width/height attribute pair keeps intrinsic ratio; CSS keeps it responsive.
+			image.width = this.parsedWidthPx_;
+			image.height = this.parsedHeightPx_;
 			image.style.maxWidth = '100%';
-			image.style.maxHeight = 'none';
-			// When width scales down, height should scale proportionally
-			if (this.width_ && this.height_) {
+			image.style.height = 'auto';
+		} else {
+			const hasWidth = typeof this.width_ === 'string' && this.width_.trim() !== '';
+			const hasHeight = typeof this.height_ === 'string' && this.height_.trim() !== '';
+
+			if (hasWidth) {
+				image.style.width = this.width_;
+				image.style.maxWidth = '100%';
+			} else {
+				image.style.maxWidth = '100%';
+			}
+
+			if (hasHeight) {
+				image.style.height = this.height_;
+			} else if (hasWidth) {
 				image.style.height = 'auto';
 			}
-		} else {
-			// No explicit dimensions - use CSS defaults
-			image.style.width = '';
-			image.style.height = '';
-			image.style.maxWidth = '';
-			image.style.maxHeight = '';
 		}
+
+		image.style.maxHeight = 'none';
 
 		const updateImageUrl = () => {
 			if (this.resolvedSrc_) {
@@ -90,13 +107,20 @@ class ImageWidget extends WidgetType {
 
 	public get estimatedHeight() {
 		// If height is specified, try to parse it for a better estimate
-		if (this.height_) {
-			const heightMatch = this.height_.match(/^(\d+)/);
-			if (heightMatch) {
-				return parseInt(heightMatch[1], 10);
-			}
+		if (this.parsedHeightPx_ !== null) {
+			return this.parsedHeightPx_;
 		}
 		return estimatedImageHeight;
+	}
+
+	private static parsePixelSize_(value?: string) {
+		if (!value) return null;
+
+		const trimmed = value.trim();
+		const match = trimmed.match(/^(\d+(?:\.\d+)?)(px)?$/i);
+		if (!match) return null;
+
+		return Number.parseFloat(match[1]);
 	}
 }
 
