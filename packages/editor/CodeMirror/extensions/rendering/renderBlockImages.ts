@@ -127,9 +127,13 @@ class ImageWidget extends WidgetType {
 		image.style.height = '';
 
 		if (this.parsedWidthPx_ !== null && this.parsedHeightPx_ !== null) {
-			// Width/height attribute pair keeps intrinsic ratio; CSS keeps it responsive.
+			// Use HTML attributes to set intrinsic aspect ratio.
+			// The browser will maintain this ratio even as the image scales.
 			image.width = this.parsedWidthPx_;
 			image.height = this.parsedHeightPx_;
+
+			// CSS to make it responsive: limit width but let height scale automatically.
+			// Don't set width:auto - let the HTML width attribute control the base size.
 			image.style.maxWidth = '100%';
 			image.style.height = 'auto';
 		} else {
