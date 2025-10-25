@@ -1,20 +1,58 @@
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import { SyntaxNodeRef } from '@lezer/common';
-import { EditorState, StateEffect, Transaction } from '@codemirror/state';
+import { EditorState, StateEffect, StateField, Transaction } from '@codemirror/state';
 import { RenderedContentContext } from './types';
 import makeBlockReplaceExtension from './utils/makeBlockReplaceExtension';
 
 const imageClassName = 'cm-md-image';
+const imageLoadingClassName = 'cm-md-image-loading';
 // Pre-set the image height for performance (allows CodeMirror to better calculate
 // the document height while scrolling). This is just an estimate - actual images
 // will scale to their natural size.
 const estimatedImageHeight = 200;
+
+interface ImageLoadState {
+	loaded: boolean;
+	naturalWidth?: number;
+	naturalHeight?: number;
+}
+
+// Effect to mark an image as loaded with its natural dimensions
+const imageLoadedEffect = StateEffect.define<{
+	src: string;
+	naturalWidth: number;
+	naturalHeight: number;
+}>();
+
+// StateField to track which images have loaded
+const imageLoadStateField = StateField.define<Map<string, ImageLoadState>>({
+	create: () => new Map(),
+	update: (state, transaction) => {
+		let hasChanges = false;
+		const newState = new Map(state);
+
+		for (const effect of transaction.effects) {
+			if (effect.is(imageLoadedEffect)) {
+				const { src, naturalWidth, naturalHeight } = effect.value;
+				newState.set(src, {
+					loaded: true,
+					naturalWidth,
+					naturalHeight,
+				});
+				hasChanges = true;
+			}
+		}
+
+		return hasChanges ? newState : state;
+	},
+});
 
 class ImageWidget extends WidgetType {
 	private resolvedSrc_: string;
 
 	private readonly parsedWidthPx_: number | null;
 	private readonly parsedHeightPx_: number | null;
+	private readonly hasDimensions_: boolean;
 
 	public constructor(
 		private readonly context_: RenderedContentContext,
@@ -23,24 +61,64 @@ class ImageWidget extends WidgetType {
 		private readonly width_?: string,
 		private readonly height_?: string,
 		private readonly reloadCounter_ = 0,
+		private readonly isLoaded_ = false,
 	) {
 		super();
 
 		this.parsedWidthPx_ = ImageWidget.parsePixelSize_(this.width_);
 		this.parsedHeightPx_ = ImageWidget.parsePixelSize_(this.height_);
+		this.hasDimensions_ = this.parsedWidthPx_ !== null && this.parsedHeightPx_ !== null;
 	}
 
 	public eq(other: ImageWidget) {
 		return this.src_ === other.src_ && this.alt_ === other.alt_ &&
 			this.width_ === other.width_ && this.height_ === other.height_ &&
-			this.reloadCounter_ === other.reloadCounter_;
+			this.reloadCounter_ === other.reloadCounter_ &&
+			this.isLoaded_ === other.isLoaded_;
 	}
 
-	public updateDOM(dom: HTMLElement): boolean {
+	public updateDOM(dom: HTMLElement, view: EditorView): boolean {
 		const image = dom.querySelector<HTMLImageElement>('img.image');
 		if (!image) return false;
 
+		// If we don't have dimensions and the image isn't loaded yet,
+		// render a minimal placeholder
+		if (!this.hasDimensions_ && !this.isLoaded_) {
+			image.alt = this.alt_;
+			image.style.display = 'inline';
+			image.style.width = '0';
+			image.style.height = '0';
+			image.style.opacity = '0';
+			image.removeAttribute('width');
+			image.removeAttribute('height');
+
+			// Set up load handler to trigger re-render
+			if (!this.resolvedSrc_) {
+				void (async () => {
+					this.resolvedSrc_ = await this.context_.resolveImageSrc(this.src_, this.reloadCounter_);
+					image.src = this.resolvedSrc_;
+
+					image.onload = () => {
+						view.dispatch({
+							effects: imageLoadedEffect.of({
+								src: this.src_,
+								naturalWidth: image.naturalWidth,
+								naturalHeight: image.naturalHeight,
+							}),
+						});
+					};
+				})();
+			} else {
+				image.src = this.resolvedSrc_;
+			}
+
+			return true;
+		}
+
+		// Normal rendering for images with dimensions or after load
 		image.alt = this.alt_;
+		image.style.display = 'block';
+		image.style.opacity = '1';
 		image.removeAttribute('width');
 		image.removeAttribute('height');
 		image.style.maxWidth = '';
@@ -92,24 +170,36 @@ class ImageWidget extends WidgetType {
 		return true;
 	}
 
-	public toDOM() {
+	public toDOM(view: EditorView) {
 		const container = document.createElement('div');
-		container.classList.add(imageClassName);
+
+		// Add appropriate class based on load state
+		if (!this.hasDimensions_ && !this.isLoaded_) {
+			container.classList.add(imageLoadingClassName);
+		} else {
+			container.classList.add(imageClassName);
+		}
 
 		const image = document.createElement('img');
 		image.classList.add('image');
 
 		container.appendChild(image);
-		this.updateDOM(container);
+		this.updateDOM(container, view);
 
 		return container;
 	}
 
 	public get estimatedHeight() {
+		// If we don't have dimensions and not loaded, return 0 (inline placeholder)
+		if (!this.hasDimensions_ && !this.isLoaded_) {
+			return 0;
+		}
+
 		// If height is specified, try to parse it for a better estimate
 		if (this.parsedHeightPx_ !== null) {
 			return this.parsedHeightPx_;
 		}
+
 		return estimatedImageHeight;
 	}
 
@@ -200,6 +290,7 @@ export const testing__resetImageRefreshCounterCache = () => {
 };
 
 const renderBlockImages = (context: RenderedContentContext) => [
+	imageLoadStateField,
 	EditorView.theme({
 		[`& .${imageClassName}`]: {
 			display: 'block',
@@ -216,9 +307,22 @@ const renderBlockImages = (context: RenderedContentContext) => [
 			display: 'block',
 			margin: '0 auto',
 		},
+		[`& .${imageLoadingClassName}`]: {
+			display: 'inline',
+			margin: '0',
+			padding: '0',
+		},
+		[`& .${imageLoadingClassName} > img`]: {
+			display: 'inline',
+			width: '0',
+			height: '0',
+			opacity: '0',
+		},
 	}),
 	makeBlockReplaceExtension({
 		createDecoration: (node, state) => {
+			const loadStateMap = state.field(imageLoadStateField);
+
 			// Handle both Markdown Image nodes and HTML HTMLTag nodes
 			if (node.name === 'Image') {
 				const lineFrom = state.doc.lineAt(node.from);
@@ -230,19 +334,26 @@ const renderBlockImages = (context: RenderedContentContext) => [
 					const alt = getImageAlt(node, state);
 
 					if (src) {
+						const loadState = loadStateMap.get(src);
+						const isLoaded = loadState?.loaded ?? false;
 						const isLastLine = lineTo.number === state.doc.lines;
+
+						// For markdown images without dimensions, use inline widget until loaded
+						const hasExplicitDimensions = false;
+						const shouldBeBlock = hasExplicitDimensions || isLoaded;
+
 						return Decoration.widget({
-							widget: new ImageWidget(context, src, alt, undefined, undefined, imageToRefreshCounters.get(src) ?? 0),
-							// "side: -1": In general, when the cursor is at the widget's location, it should be at
-							// the start of the next line (and so "side" should be -1).
-							//
-							// "side: 1": However, when the widget is at the end of the document, the widget's
-							// position is **one index less** than when it isn't (to prevent the widget's
-							// position from being outside the document, which would break CodeMirror).
-							// This means that we need "side: 1" to put the cursor before the widget
-							// when at the end of the document.
+							widget: new ImageWidget(
+								context,
+								src,
+								alt,
+								undefined,
+								undefined,
+								imageToRefreshCounters.get(src) ?? 0,
+								isLoaded,
+							),
 							side: isLastLine ? 1 : -1,
-							block: true,
+							block: shouldBeBlock,
 						});
 					}
 				}
@@ -261,11 +372,28 @@ const renderBlockImages = (context: RenderedContentContext) => [
 						const height = getImageHeight(node, state);
 
 						if (src) {
+							const loadState = loadStateMap.get(src);
+							const isLoaded = loadState?.loaded ?? false;
 							const isLastLine = lineTo.number === state.doc.lines;
+
+							// Check if we have explicit dimensions from HTML attributes
+							const hasExplicitDimensions = width !== null && height !== null;
+
+							// Use block widget if we have dimensions or if loaded
+							const shouldBeBlock = hasExplicitDimensions || isLoaded;
+
 							return Decoration.widget({
-								widget: new ImageWidget(context, src, alt, width, height, imageToRefreshCounters.get(src) ?? 0),
+								widget: new ImageWidget(
+									context,
+									src,
+									alt,
+									width,
+									height,
+									imageToRefreshCounters.get(src) ?? 0,
+									isLoaded,
+								),
 								side: isLastLine ? 1 : -1,
-								block: true,
+								block: shouldBeBlock,
 							});
 						}
 					}
@@ -281,14 +409,20 @@ const renderBlockImages = (context: RenderedContentContext) => [
 
 		shouldFullReRender: (transaction: Transaction) => {
 			let hadRefreshEffect = false;
+			let hadLoadEffect = false;
+
 			for (const effect of transaction.effects) {
 				if (effect.is(resetImageResourceEffect)) {
 					const key = `:/${effect.value.id}`;
 					imageToRefreshCounters.set(key, (imageToRefreshCounters.get(key) ?? 0) + 1);
 					hadRefreshEffect = true;
 				}
+				if (effect.is(imageLoadedEffect)) {
+					hadLoadEffect = true;
+				}
 			}
-			return hadRefreshEffect;
+
+			return hadRefreshEffect || hadLoadEffect;
 		},
 	}),
 ];
