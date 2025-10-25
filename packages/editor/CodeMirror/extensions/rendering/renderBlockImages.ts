@@ -352,6 +352,14 @@ const renderBlockImages = (context: RenderedContentContext) => [
 								imageToRefreshCounters.get(src) ?? 0,
 								isLoaded,
 							),
+							// "side: -1": In general, when the cursor is at the widget's location, it should be at
+							// the start of the next line (and so "side" should be -1).
+							//
+							// "side: 1": However, when the widget is at the end of the document, the widget's
+							// position is **one index less** than when it isn't (to prevent the widget's
+							// position from being outside the document, which would break CodeMirror).
+							// This means that we need "side: 1" to put the cursor before the widget
+							// when at the end of the document.
 							side: isLastLine ? 1 : -1,
 							block: shouldBeBlock,
 						});
