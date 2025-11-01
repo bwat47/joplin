@@ -9,12 +9,14 @@ const imageClassName = 'cm-md-image';
 // the document height while scrolling). This is just an estimate - actual images
 // will scale to their natural size.
 const estimatedImageHeight = 200;
+const softMaxImageHeight = '50vh';
 
 class ImageWidget extends WidgetType {
 	private resolvedSrc_: string;
 
 	private readonly parsedWidthPx_: number | null;
 	private readonly parsedHeightPx_: number | null;
+	private view_: EditorView | null = null;
 
 	public constructor(
 		private readonly context_: RenderedContentContext,
@@ -36,7 +38,11 @@ class ImageWidget extends WidgetType {
 			this.reloadCounter_ === other.reloadCounter_;
 	}
 
-	public updateDOM(dom: HTMLElement): boolean {
+	public updateDOM(dom: HTMLElement, view?: EditorView): boolean {
+		if (view) {
+			this.view_ = view;
+		}
+
 		const image = dom.querySelector<HTMLImageElement>('img.image');
 		if (!image) return false;
 
@@ -48,6 +54,9 @@ class ImageWidget extends WidgetType {
 		image.style.width = '';
 		image.style.height = '';
 
+		const hasWidth = typeof this.width_ === 'string' && this.width_.trim() !== '';
+		const hasHeight = typeof this.height_ === 'string' && this.height_.trim() !== '';
+
 		if (this.parsedWidthPx_ !== null && this.parsedHeightPx_ !== null) {
 			// Width/height attribute pair keeps intrinsic ratio; CSS keeps it responsive.
 			image.width = this.parsedWidthPx_;
@@ -55,9 +64,6 @@ class ImageWidget extends WidgetType {
 			image.style.maxWidth = '100%';
 			image.style.height = 'auto';
 		} else {
-			const hasWidth = typeof this.width_ === 'string' && this.width_.trim() !== '';
-			const hasHeight = typeof this.height_ === 'string' && this.height_.trim() !== '';
-
 			if (hasWidth) {
 				image.style.width = this.width_;
 				image.style.maxWidth = '100%';
@@ -72,11 +78,18 @@ class ImageWidget extends WidgetType {
 			}
 		}
 
-		image.style.maxHeight = 'none';
+		if (!hasHeight && this.parsedHeightPx_ === null) {
+			image.style.maxHeight = softMaxImageHeight;
+		}
 
 		const updateImageUrl = () => {
 			if (this.resolvedSrc_) {
+				const requestMeasure = () => this.scheduleMeasure_(view);
+				image.addEventListener('load', requestMeasure, { once: true });
 				image.src = this.resolvedSrc_;
+				if (image.complete) {
+					requestMeasure();
+				}
 			}
 		};
 
@@ -89,10 +102,12 @@ class ImageWidget extends WidgetType {
 			updateImageUrl();
 		}
 
+		this.scheduleMeasure_(view);
+
 		return true;
 	}
 
-	public toDOM() {
+	public toDOM(view: EditorView) {
 		const container = document.createElement('div');
 		container.classList.add(imageClassName);
 
@@ -100,7 +115,8 @@ class ImageWidget extends WidgetType {
 		image.classList.add('image');
 
 		container.appendChild(image);
-		this.updateDOM(container);
+		this.view_ = view;
+		this.updateDOM(container, view);
 
 		return container;
 	}
@@ -111,6 +127,15 @@ class ImageWidget extends WidgetType {
 			return this.parsedHeightPx_;
 		}
 		return estimatedImageHeight;
+	}
+
+	public destroy(_dom: HTMLElement): void {
+		this.view_ = null;
+	}
+
+	private scheduleMeasure_(view?: EditorView) {
+		const targetView = view ?? this.view_;
+		targetView?.requestMeasure();
 	}
 
 	private static parsePixelSize_(value?: string) {
