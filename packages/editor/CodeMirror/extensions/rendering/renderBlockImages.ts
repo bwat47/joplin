@@ -10,6 +10,7 @@ const imageLoadingClassName = 'cm-md-image-loading';
 // the document height while scrolling). This is just an estimate - actual images
 // will scale to their natural size.
 const estimatedImageHeight = 200;
+const softMaxImageHeight = '50vh';
 
 interface ImageLoadState {
 	loaded: boolean;
@@ -81,6 +82,27 @@ class ImageWidget extends WidgetType {
 		const image = dom.querySelector<HTMLImageElement>('img.image');
 		if (!image) return false;
 
+		const hasExplicitWidth = typeof this.width_ === 'string' && this.width_.trim() !== '';
+		const hasExplicitHeight = typeof this.height_ === 'string' && this.height_.trim() !== '';
+
+		const attachLoadCallback = (key: 'measureAttached' | 'loadEffectAttached', callback: ()=> void) => {
+			const dataKey = key === 'measureAttached' ? 'cmMeasureAttached' : 'cmLoadEffectAttached';
+			if (image.dataset[dataKey] === '1') return;
+			image.dataset[dataKey] = '1';
+
+			let handled = false;
+			const handle = () => {
+				if (handled) return;
+				handled = true;
+				callback();
+			};
+
+			image.addEventListener('load', handle, { once: true });
+			if (image.complete) {
+				handle();
+			}
+		};
+
 		// If we don't have dimensions and the image isn't loaded yet,
 		// render a minimal placeholder
 		if (!this.hasDimensions_ && !this.isLoaded_) {
@@ -96,9 +118,7 @@ class ImageWidget extends WidgetType {
 			if (!this.resolvedSrc_) {
 				void (async () => {
 					this.resolvedSrc_ = await this.context_.resolveImageSrc(this.src_, this.reloadCounter_);
-					image.src = this.resolvedSrc_;
-
-					image.onload = () => {
+					attachLoadCallback('loadEffectAttached', () => {
 						view.dispatch({
 							effects: imageLoadedEffect.of({
 								src: this.src_,
@@ -106,9 +126,21 @@ class ImageWidget extends WidgetType {
 								naturalHeight: image.naturalHeight,
 							}),
 						});
-					};
+						view.requestMeasure();
+					});
+					image.src = this.resolvedSrc_;
 				})();
 			} else {
+				attachLoadCallback('loadEffectAttached', () => {
+					view.dispatch({
+						effects: imageLoadedEffect.of({
+							src: this.src_,
+							naturalWidth: image.naturalWidth,
+							naturalHeight: image.naturalHeight,
+						}),
+					});
+					view.requestMeasure();
+				});
 				image.src = this.resolvedSrc_;
 			}
 
@@ -137,27 +169,31 @@ class ImageWidget extends WidgetType {
 			image.style.maxWidth = '100%';
 			image.style.height = 'auto';
 		} else {
-			const hasWidth = typeof this.width_ === 'string' && this.width_.trim() !== '';
-			const hasHeight = typeof this.height_ === 'string' && this.height_.trim() !== '';
-
-			if (hasWidth) {
+			if (hasExplicitWidth) {
 				image.style.width = this.width_;
 				image.style.maxWidth = '100%';
 			} else {
 				image.style.maxWidth = '100%';
 			}
 
-			if (hasHeight) {
+			if (hasExplicitHeight) {
 				image.style.height = this.height_;
-			} else if (hasWidth) {
+			} else if (hasExplicitWidth) {
 				image.style.height = 'auto';
 			}
 		}
 
-		image.style.maxHeight = 'none';
+		if (!hasExplicitHeight && this.parsedHeightPx_ === null) {
+			image.style.maxHeight = softMaxImageHeight;
+		} else {
+			image.style.maxHeight = 'none';
+		}
 
 		const updateImageUrl = () => {
 			if (this.resolvedSrc_) {
+				attachLoadCallback('measureAttached', () => {
+					view.requestMeasure();
+				});
 				image.src = this.resolvedSrc_;
 			}
 		};
@@ -169,6 +205,10 @@ class ImageWidget extends WidgetType {
 			})();
 		} else {
 			updateImageUrl();
+		}
+
+		if (this.isLoaded_) {
+			view.requestMeasure();
 		}
 
 		return true;
