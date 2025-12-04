@@ -1,5 +1,4 @@
 import { EditorView } from '@codemirror/view';
-import { syntaxTree } from '@codemirror/language';
 
 // Auto-completes fenced code blocks by adding closing backticks after typing three opening backticks
 const autoCloseFencedCodeBlockExtension = () => {
@@ -24,24 +23,7 @@ const autoCloseFencedCodeBlockExtension = () => {
 			return false;
 		}
 
-		// Check syntax tree to see if we're already inside a FencedCode block
-		const tree = syntaxTree(state);
-		const nodeAtCursor = tree.resolveInner(from, -1);
-
-		// If we're inside a FencedCode block, we're likely closing it, not opening
-		// Walk up the tree to check if any parent is FencedCode
-		let node = nodeAtCursor;
-		while (node) {
-			if (node.name === 'FencedCode') {
-				// We're inside a fenced code block, so this is likely a closing sequence
-				// Let the default behavior handle it (don't auto-complete)
-				return false;
-			}
-			node = node.parent;
-		}
-
-		// We're opening a new fenced code block!
-		// Insert: backtick + newline + three backticks (user will press Enter to add content line)
+		// Insert: backtick + newline + three backticks (user can press Enter to add content line)
 		const indent = textBeforeCursor.match(/^(\s*)/)?.[1] || '';
 		const insert = `\`\n${indent}\`\`\``;
 
