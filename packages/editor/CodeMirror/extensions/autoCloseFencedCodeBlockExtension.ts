@@ -41,9 +41,9 @@ const autoCloseFencedCodeBlockExtension = () => {
 		}
 
 		// We're opening a new fenced code block!
-		// Insert: backtick + newline + newline + three backticks
+		// Insert: backtick + newline + three backticks (user will press Enter to add content line)
 		const indent = textBeforeCursor.match(/^(\s*)/)?.[1] || '';
-		const insert = `\`\n${indent}\n${indent}\`\`\``;
+		const insert = `\`\n${indent}\`\`\``;
 
 		const changes = state.changes({
 			from: from,
@@ -51,8 +51,8 @@ const autoCloseFencedCodeBlockExtension = () => {
 			insert: insert,
 		});
 
-		// Position cursor on the middle line (after first newline)
-		const cursorPos = from + 2 + indent.length; // backtick + newline + indent
+		// Position cursor right after the third backtick so user can type language identifier
+		const cursorPos = from + 1; // right after the inserted backtick
 
 		view.dispatch({
 			changes,
