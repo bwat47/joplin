@@ -14,6 +14,12 @@ export interface ReplacementExtension {
 	// Disable the decoration when near the cursor. Defaults to true.
 	hideWhenContainsSelection?: boolean;
 
+	// Determines when the decoration should be hidden (revealing the underlying text).
+	// 'line': Hide if cursor is not on the same line (default). Reveal if cursor is on the same line.
+	// 'select': Hide if cursor does not intersect the node. Reveal if cursor intersects the node.
+	// 'active': Hide if cursor does not intersect the node OR its parent. Reveal if cursor is inside the node or its structural parent.
+	getRevealStrategy?: (node: SyntaxNodeRef, state: EditorState)=> 'line' | 'select' | 'active';
+
 	// Allows specifying custom logic to refresh all decorations associated with the extension
 	shouldFullReRender?: (transaction: Transaction)=> boolean;
 }
