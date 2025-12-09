@@ -61,7 +61,9 @@ export const makeInlineReplaceExtension = (extensionSpec: ReplacementExtension) 
 					const strategy = extensionSpec.getRevealStrategy?.(node, view.state) ?? 'line';
 
 					let isSelected = false;
-					if (strategy === 'line') {
+					if (typeof strategy === 'boolean') {
+						isSelected = strategy;
+					} else if (strategy === 'line') {
 						const nodeLine = doc.lineAt(node.from);
 						const lineContainsSelection = cursorLine.number === nodeLine.number;
 						isSelected = lineContainsSelection || nodeIntersectsSelection(selection, node);
