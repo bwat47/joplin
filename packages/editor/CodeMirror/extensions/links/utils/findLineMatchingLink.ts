@@ -8,10 +8,32 @@ const findLineMatchingLink = (link: string, state: EditorState): Line|null => {
 
 	if (!isAnchorLink && !isFootnote) return null;
 
+	// Track seen hashes to handle duplicate headings (e.g., two "## Heading" become "heading" and "heading-2")
+	const seenHashes = new Map<string, number>();
+
+	// Generate a unique hash for a heading, appending -2, -3, etc. for duplicates
+	const getUniqueHash = (originalHash: string): string => {
+		const count = seenHashes.get(originalHash) ?? 0;
+		seenHashes.set(originalHash, count + 1);
+
+		if (count === 0) {
+			return originalHash;
+		}
+		return `${originalHash}-${count + 1}`;
+	};
+
+	const targetHash = link.substring(1);
+
 	const matchesLine = (line: string) => {
 		if (isAnchorLink) {
-			line = line.replace(/^#+/, '').trim();
-			return uslug(line) === link.substring(1);
+			// Check if this line is a heading
+			const headingMatch = line.match(/^#+\s/);
+			if (!headingMatch) return false;
+
+			const headingText = line.replace(/^#+/, '').trim();
+			const originalHash = uslug(headingText);
+			const uniqueHash = getUniqueHash(originalHash);
+			return uniqueHash === targetHash;
 		} else if (isFootnote) {
 			return line.trim().startsWith(`${link}:`);
 		}
