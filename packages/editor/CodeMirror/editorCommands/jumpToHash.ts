@@ -3,11 +3,15 @@ import { EditorSelection } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import uslug from '@joplin/fork-uslug/lib/uslug';
 import { SyntaxNodeRef } from '@lezer/common';
+import createHashTracker from '../utils/createHashTracker';
 
 const jumpToHash = (view: EditorView, hash: string) => {
 	const state = view.state;
 	const timeout = 1_000; // Maximum time to spend parsing the syntax tree
 	let targetLocation: number|undefined = undefined;
+
+	// Track seen hashes to handle duplicate headings (e.g., two "## Heading" become "heading" and "heading-2")
+	const hashTracker = createHashTracker();
 
 	const removeQuotes = (quoted: string) => quoted.replace(/^["'](.*)["']$/, '$1');
 
@@ -45,7 +49,9 @@ const jumpToHash = (view: EditorView, hash: string) => {
 			const nodeText = nodeToText(node)
 				.replace(/^#+\s/, '') // Leading #s in headers
 				.replace(/\n-+$/, ''); // Trailing --s in headers
-			matches = hash === uslug(nodeText);
+			const originalHash = uslug(nodeText);
+			const uniqueHash = hashTracker.getUniqueHash(originalHash);
+			matches = hash === uniqueHash;
 		} else if (node.name === 'HTMLTag' || node.name === 'HTMLBlock') {
 			// CodeMirror adds HTML information to Markdown documents using overlays attached
 			// to HTMLTag and HTMLBlock nodes.

@@ -16,6 +16,15 @@ describe('findLineMatchingLink', () => {
 		// Should return null when there are no matches
 		['# Heading', '#missing-heading', null],
 
+		// Should handle duplicate headings with numbered hashes
+		['## Heading\n## Heading', '#heading', 1],
+		['## Heading\n## Heading', '#heading-2', 2],
+		['## Heading\n## Heading\n## Heading', '#heading-3', 3],
+		['## First\n## Heading\n## Second\n## Heading', '#heading', 2],
+		['## First\n## Heading\n## Second\n## Heading', '#heading-2', 4],
+		// Non-existent duplicate should return null
+		['## Heading\n## Heading', '#heading-3', null],
+
 		// Should match footnotes
 		['[^1]: Footnote!\n', '[^1]', 1],
 		['[^1]: Footnote!\n[^2]: Other footnote.', '[^1]', 1],

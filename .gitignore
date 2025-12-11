@@ -1052,6 +1052,7 @@ packages/editor/CodeMirror/testing/loadLanguages.js
 packages/editor/CodeMirror/testing/pressReleaseKey.js
 packages/editor/CodeMirror/testing/typeText.js
 packages/editor/CodeMirror/theme.js
+packages/editor/CodeMirror/utils/createHashTracker.js
 packages/editor/CodeMirror/utils/formatting/RegionSpec.js
 packages/editor/CodeMirror/utils/formatting/computeSelectionFormatting.test.js
 packages/editor/CodeMirror/utils/formatting/computeSelectionFormatting.js
