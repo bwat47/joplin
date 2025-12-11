@@ -9,7 +9,21 @@ const jumpToHash = (view: EditorView, hash: string) => {
 	const timeout = 1_000; // Maximum time to spend parsing the syntax tree
 	let targetLocation: number|undefined = undefined;
 
+	// Track seen hashes to handle duplicate headings (e.g., two "## Heading" become "heading" and "heading-2")
+	const seenHashes = new Map<string, number>();
+
 	const removeQuotes = (quoted: string) => quoted.replace(/^["'](.*)["']$/, '$1');
+
+	// Generate a unique hash for a heading, appending -2, -3, etc. for duplicates
+	const getUniqueHash = (originalHash: string): string => {
+		const count = seenHashes.get(originalHash) ?? 0;
+		seenHashes.set(originalHash, count + 1);
+
+		if (count === 0) {
+			return originalHash;
+		}
+		return `${originalHash}-${count + 1}`;
+	};
 
 	const makeEnterNode = (offset: number) => (node: SyntaxNodeRef) => {
 		const nodeToText = (node: SyntaxNodeRef) => {
@@ -45,7 +59,9 @@ const jumpToHash = (view: EditorView, hash: string) => {
 			const nodeText = nodeToText(node)
 				.replace(/^#+\s/, '') // Leading #s in headers
 				.replace(/\n-+$/, ''); // Trailing --s in headers
-			matches = hash === uslug(nodeText);
+			const originalHash = uslug(nodeText);
+			const uniqueHash = getUniqueHash(originalHash);
+			matches = hash === uniqueHash;
 		} else if (node.name === 'HTMLTag' || node.name === 'HTMLBlock') {
 			// CodeMirror adds HTML information to Markdown documents using overlays attached
 			// to HTMLTag and HTMLBlock nodes.
