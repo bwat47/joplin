@@ -5,6 +5,7 @@ import { RenderedContentContext } from './types';
 import makeBlockReplaceExtension from './utils/makeBlockReplaceExtension';
 
 const imageClassName = 'cm-md-image';
+const loadingClassName = 'cm-md-image-loading';
 
 class ImageHeightCache {
 	private readonly cache = new Map<string, number>();
@@ -78,6 +79,9 @@ class ImageWidget extends WidgetType {
 					if (dom.isConnected) {
 						imageHeightCache.set(this.cacheKey, dom.offsetHeight);
 					}
+
+					dom.classList.remove(loadingClassName);
+					dom.style.minHeight = '';
 				};
 			}
 		};
@@ -91,12 +95,20 @@ class ImageWidget extends WidgetType {
 			updateImageUrl();
 		}
 
+		// Apply cached height as min-height to prevent collapse during load
+		// or default to 100px.
+		const cached = imageHeightCache.get(this.cacheKey);
+		if (cached) {
+			dom.style.minHeight = `${cached}px`;
+		}
+
 		return true;
 	}
 
 	public toDOM(_view: EditorView) {
 		const container = document.createElement('div');
 		container.classList.add(imageClassName);
+		container.classList.add(loadingClassName);
 
 		const image = document.createElement('img');
 		image.classList.add('image');
@@ -113,7 +125,7 @@ class ImageWidget extends WidgetType {
 
 	public get estimatedHeight() {
 		const cached = imageHeightCache.get(this.cacheKey);
-		return cached !== undefined ? cached : -1;
+		return cached !== undefined ? cached : 100;
 	}
 }
 
@@ -193,6 +205,9 @@ const renderBlockImages = (context: RenderedContentContext) => [
 			// Center
 			marginLeft: 'auto',
 			marginRight: 'auto',
+		},
+		[`& .${loadingClassName}`]: {
+			minHeight: '100px',
 		},
 	}),
 	makeBlockReplaceExtension({
