@@ -96,7 +96,7 @@ class ImageWidget extends WidgetType {
 		}
 
 		// Apply cached height as min-height to prevent collapse during load
-		// or default to 100px.
+		// or default to 400px. Using a larger default height helps with initial scroll performance.
 		const cached = imageHeightCache.get(this.cacheKey);
 		if (cached) {
 			dom.style.minHeight = `${cached}px`;
@@ -125,7 +125,7 @@ class ImageWidget extends WidgetType {
 
 	public get estimatedHeight() {
 		const cached = imageHeightCache.get(this.cacheKey);
-		return cached !== undefined ? cached : 100;
+		return cached !== undefined ? cached : 400;
 	}
 }
 
