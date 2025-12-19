@@ -5,7 +5,6 @@ import { RenderedContentContext } from './types';
 import makeBlockReplaceExtension from './utils/makeBlockReplaceExtension';
 
 const imageClassName = 'cm-md-image';
-const loadingClassName = 'cm-md-image-loading';
 const defaultEstimatedHeight = 400;
 
 class ImageHeightCache {
@@ -81,7 +80,6 @@ class ImageWidget extends WidgetType {
 						imageHeightCache.set(this.cacheKey, dom.offsetHeight);
 					}
 
-					dom.classList.remove(loadingClassName);
 					dom.style.minHeight = '';
 				};
 			}
@@ -107,7 +105,6 @@ class ImageWidget extends WidgetType {
 	public toDOM(_view: EditorView) {
 		const container = document.createElement('div');
 		container.classList.add(imageClassName);
-		container.classList.add(loadingClassName);
 
 		const image = document.createElement('img');
 		image.classList.add('image');
