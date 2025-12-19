@@ -6,6 +6,7 @@ import makeBlockReplaceExtension from './utils/makeBlockReplaceExtension';
 
 const imageClassName = 'cm-md-image';
 const loadingClassName = 'cm-md-image-loading';
+const defaultEstimatedHeight = 400;
 
 class ImageHeightCache {
 	private readonly cache = new Map<string, number>();
@@ -95,12 +96,10 @@ class ImageWidget extends WidgetType {
 			updateImageUrl();
 		}
 
-		// Apply cached height as min-height to prevent collapse during load
-		// or default to 400px. Using a larger default height helps with initial scroll performance.
+		// Apply cached height as min-height to prevent collapse during load.
+		// Default to defaultEstimatedHeight for consistent scroll calculations.
 		const cached = imageHeightCache.get(this.cacheKey);
-		if (cached) {
-			dom.style.minHeight = `${cached}px`;
-		}
+		dom.style.minHeight = `${cached ?? defaultEstimatedHeight}px`;
 
 		return true;
 	}
@@ -125,7 +124,7 @@ class ImageWidget extends WidgetType {
 
 	public get estimatedHeight() {
 		const cached = imageHeightCache.get(this.cacheKey);
-		return cached !== undefined ? cached : 400;
+		return cached ?? defaultEstimatedHeight;
 	}
 }
 
@@ -205,9 +204,6 @@ const renderBlockImages = (context: RenderedContentContext) => [
 			// Center
 			marginLeft: 'auto',
 			marginRight: 'auto',
-		},
-		[`& .${loadingClassName}`]: {
-			minHeight: '100px',
 		},
 	}),
 	makeBlockReplaceExtension({
