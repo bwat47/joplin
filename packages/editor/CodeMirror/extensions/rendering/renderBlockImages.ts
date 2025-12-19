@@ -10,7 +10,7 @@ const defaultEstimatedHeight = 400;
 
 class ImageHeightCache {
 	private readonly cache = new Map<string, number>();
-	private readonly MAX_ENTRIES = 200;
+	private readonly maxEntries = 200;
 
 	public get(key: string): number | undefined {
 		const value = this.cache.get(key);
@@ -25,7 +25,7 @@ class ImageHeightCache {
 	public set(key: string, height: number): void {
 		if (this.cache.has(key)) {
 			this.cache.delete(key);
-		} else if (this.cache.size >= this.MAX_ENTRIES) {
+		} else if (this.cache.size >= this.maxEntries) {
 			const firstKey = this.cache.keys().next().value;
 			if (firstKey) this.cache.delete(firstKey);
 		}
