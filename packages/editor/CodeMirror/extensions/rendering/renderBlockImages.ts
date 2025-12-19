@@ -8,7 +8,7 @@ const imageClassName = 'cm-md-image';
 
 class ImageHeightCache {
 	private readonly cache = new Map<string, number>();
-	private readonly maxEntries = 200;
+	private readonly maxEntries = 500;
 
 	public get(key: string): number | undefined {
 		const value = this.cache.get(key);
