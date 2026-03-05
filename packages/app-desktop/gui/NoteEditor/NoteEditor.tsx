@@ -475,6 +475,7 @@ function NoteEditorContent(props: NoteEditorProps) {
 		watchedNoteFiles: props.watchedNoteFiles,
 		enableHtmlToMarkdownBanner: props.enableHtmlToMarkdownBanner,
 		showNoteLinkIcon: props.showNoteLinkIcon,
+		accessibilitySupportEnabled: props.accessibilitySupportEnabled,
 	};
 
 	let editor = null;
@@ -769,6 +770,7 @@ const mapStateToProps = (state: AppState, ownProps: ConnectProps) => {
 		enableHtmlToMarkdownBanner: state.settings['editor.enableHtmlToMarkdownBanner'],
 		enableInEditorRendering: state.settings['editor.inlineRendering'],
 		showNoteLinkIcon: state.settings['notes.showNoteLinkIcon'],
+		accessibilitySupportEnabled: state.accessibilitySupportEnabled,
 	};
 };
 

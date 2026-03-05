@@ -2,6 +2,20 @@ import { AppState, createAppDefaultWindowState } from './app.reducer';
 import appReducer, { createAppDefaultState } from './app.reducer';
 
 describe('app.reducer', () => {
+	it('should default accessibilitySupportEnabled to false', () => {
+		const state: AppState = createAppDefaultState({});
+		expect(state.accessibilitySupportEnabled).toBe(false);
+	});
+
+	it('should handle ACCESSIBILITY_SUPPORT_SET', () => {
+		const state: AppState = createAppDefaultState({});
+		const newState = appReducer(state, {
+			type: 'ACCESSIBILITY_SUPPORT_SET',
+			value: true,
+		});
+
+		expect(newState.accessibilitySupportEnabled).toBe(true);
+	});
 
 	it('should handle DIALOG_OPEN', async () => {
 		const state: AppState = createAppDefaultState({});

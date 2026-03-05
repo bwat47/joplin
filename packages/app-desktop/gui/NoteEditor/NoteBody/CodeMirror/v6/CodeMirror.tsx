@@ -353,7 +353,7 @@ const CodeMirror = (props: NoteBodyEditorProps, ref: ForwardedRef<NoteBodyEditor
 			readOnly: props.disabled,
 			markdownMarkEnabled: Setting.value('markdown.plugin.mark'),
 			katexEnabled: Setting.value('markdown.plugin.katex'),
-			inlineRenderingEnabled: Setting.value('editor.inlineRendering'),
+			inlineRenderingEnabled: Setting.value('editor.inlineRendering') && !props.accessibilitySupportEnabled,
 			imageRenderingEnabled: Setting.value('editor.imageRendering'),
 			highlightActiveLine: Setting.value('editor.highlightActiveLine'),
 			themeData: {
@@ -375,7 +375,7 @@ const CodeMirror = (props: NoteBodyEditorProps, ref: ForwardedRef<NoteBodyEditor
 		};
 	}, [
 		props.contentMarkupLanguage, props.disabled, props.keyboardMode, styles.globalTheme,
-		props.tabMovesFocus,
+		props.tabMovesFocus, props.accessibilitySupportEnabled,
 	]);
 
 	const initialCursorLocationRef = useRef(0);

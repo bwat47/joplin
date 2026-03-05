@@ -513,9 +513,17 @@ export class Bridge {
 		return nativeTheme.shouldUseDarkColors;
 	}
 
-	public addEventListener(name: string, fn: ()=> void) {
+	public isAccessibilitySupportEnabled() {
+		return this.electronApp().electronApp().accessibilitySupportEnabled;
+	}
+
+	public addEventListener(name: 'nativeThemeUpdated'|'accessibilitySupportChanged', fn: ((enabled?: boolean)=> void)) {
 		if (name === 'nativeThemeUpdated') {
 			nativeTheme.on('updated', fn);
+		} else if (name === 'accessibilitySupportChanged') {
+			this.electronApp().electronApp().on('accessibility-support-changed', (_event, enabled) => {
+				fn(enabled);
+			});
 		} else {
 			throw new Error(`Unsupported event: ${name}`);
 		}

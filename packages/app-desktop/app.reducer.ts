@@ -63,6 +63,7 @@ export interface AppState extends State, AppWindowState {
 	// Extra reducer keys go here
 	mainLayout: LayoutItem;
 	isResettingLayout: boolean;
+	accessibilitySupportEnabled: boolean;
 }
 
 export const createAppDefaultWindowState = (): AppWindowState => {
@@ -95,6 +96,7 @@ export function createAppDefaultState(resourceEditWatcherDefaultState: any): App
 		mainLayout: null,
 		startupPluginsLoaded: false,
 		isResettingLayout: false,
+		accessibilitySupportEnabled: false,
 		modalOverlayMessage: null,
 		...resourceEditWatcherDefaultState,
 	};
@@ -204,6 +206,13 @@ export default function(state: AppState, action: any) {
 			newState = {
 				...state,
 				editorCodeView: action.value,
+			};
+			break;
+
+		case 'ACCESSIBILITY_SUPPORT_SET':
+			newState = {
+				...state,
+				accessibilitySupportEnabled: action.value,
 			};
 			break;
 

@@ -716,6 +716,16 @@ class Application extends BaseApplication {
 
 		addTask('app/listen for main process events', () => {
 			bridge().addEventListener('nativeThemeUpdated', this.bridge_nativeThemeUpdated);
+			this.dispatch({
+				type: 'ACCESSIBILITY_SUPPORT_SET',
+				value: bridge().isAccessibilitySupportEnabled(),
+			});
+			bridge().addEventListener('accessibilitySupportChanged', (enabled: boolean) => {
+				this.dispatch({
+					type: 'ACCESSIBILITY_SUPPORT_SET',
+					value: enabled,
+				});
+			});
 			bridge().setOnAllowedExtensionsChangeListener((newExtensions) => {
 				Setting.setValue('linking.extraAllowedExtensions', newExtensions);
 			});
