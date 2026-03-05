@@ -716,10 +716,25 @@ class Application extends BaseApplication {
 
 		addTask('app/listen for main process events', () => {
 			bridge().addEventListener('nativeThemeUpdated', this.bridge_nativeThemeUpdated);
-			this.dispatch({
-				type: 'ACCESSIBILITY_SUPPORT_SET',
-				value: bridge().isAccessibilitySupportEnabled(),
-			});
+			let lastAccessibilitySupportEnabled: boolean|null = null;
+
+			const syncAccessibilitySupportEnabled = () => {
+				const enabled = bridge().isAccessibilitySupportEnabled();
+				if (lastAccessibilitySupportEnabled === enabled) return;
+
+				lastAccessibilitySupportEnabled = enabled;
+				this.dispatch({
+					type: 'ACCESSIBILITY_SUPPORT_SET',
+					value: enabled,
+				});
+			};
+
+			// Sync once at startup and continue syncing because Electron doesn't
+			// always emit accessibility-support-changed when assistive technology
+			// starts or stops after launch.
+			syncAccessibilitySupportEnabled();
+			setInterval(syncAccessibilitySupportEnabled, 2000);
+
 			bridge().addEventListener('accessibilitySupportChanged', (enabled: boolean) => {
 				this.dispatch({
 					type: 'ACCESSIBILITY_SUPPORT_SET',
@@ -739,6 +754,8 @@ class Application extends BaseApplication {
 						lastWindowId: currentWindowId,
 					});
 				}
+
+				syncAccessibilitySupportEnabled();
 			});
 		});
 
