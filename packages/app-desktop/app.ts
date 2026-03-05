@@ -735,11 +735,8 @@ class Application extends BaseApplication {
 			syncAccessibilitySupportEnabled();
 			setInterval(syncAccessibilitySupportEnabled, 2000);
 
-			bridge().addEventListener('accessibilitySupportChanged', (enabled: boolean) => {
-				this.dispatch({
-					type: 'ACCESSIBILITY_SUPPORT_SET',
-					value: enabled,
-				});
+			bridge().addEventListener('accessibilitySupportChanged', (_enabled: boolean) => {
+				syncAccessibilitySupportEnabled();
 			});
 			bridge().setOnAllowedExtensionsChangeListener((newExtensions) => {
 				Setting.setValue('linking.extraAllowedExtensions', newExtensions);

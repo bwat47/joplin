@@ -514,7 +514,8 @@ export class Bridge {
 	}
 
 	public isAccessibilitySupportEnabled() {
-		return this.electronApp().electronApp().accessibilitySupportEnabled;
+		const features = this.electronApp().electronApp().getAccessibilitySupportFeatures();
+		return features.includes('screenReader');
 	}
 
 	public addEventListener(name: 'nativeThemeUpdated'|'accessibilitySupportChanged', fn: ((enabled?: boolean)=> void)) {
