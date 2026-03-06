@@ -110,7 +110,7 @@ const configFromSettings = (settings: EditorSettings, context: RenderedContentCo
 	}
 
 	if (settings.inlineRenderingEnabled) {
-		extensions.push(renderingExtension());
+		extensions.push(renderingExtension(settings.inlineMarkupRenderMode));
 	}
 
 	if (settings.imageRenderingEnabled) {

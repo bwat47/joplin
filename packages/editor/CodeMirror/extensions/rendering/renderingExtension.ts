@@ -5,15 +5,16 @@ import replaceCheckboxes from './replaceCheckboxes';
 import replaceDividers from './replaceDividers';
 import replaceFormatCharacters from './replaceFormatCharacters';
 import replaceInlineHtml from './replaceInlineHtml';
+import { InlineMarkupRenderMode } from '../../../types';
 
-export default () => {
+export default (renderMode: InlineMarkupRenderMode = InlineMarkupRenderMode.Normal) => {
 	return [
 		replaceCheckboxes,
 		replaceBulletLists,
-		replaceFormatCharacters,
+		replaceFormatCharacters(renderMode),
 		replaceBackslashEscapes,
 		replaceDividers,
-		addFormattingClasses,
+		addFormattingClasses(renderMode),
 		replaceInlineHtml,
 	];
 };

@@ -3,6 +3,7 @@ import { SyntaxNodeRef } from '@lezer/common';
 import { EditorState } from '@codemirror/state';
 import referenceLinkStateField, { isReferenceLink, resolveReferenceFromLink } from '../links/referenceLinksStateField';
 import { Decoration } from '@codemirror/view';
+import { InlineMarkupRenderMode } from '../../../types';
 
 const shouldFullReplace = (node: SyntaxNodeRef, state: EditorState) => {
 	const getParentName = () => node.node.parent?.name;
@@ -44,50 +45,52 @@ const shouldFullReplace = (node: SyntaxNodeRef, state: EditorState) => {
 
 const hideDecoration = Decoration.replace({});
 
-const replaceFormatCharacters = [
-	// Dependency
-	referenceLinkStateField,
+const replaceFormatCharacters = (renderMode: InlineMarkupRenderMode = InlineMarkupRenderMode.Normal) => {
+	return [
+		// Dependency
+		referenceLinkStateField,
 
-	makeInlineReplaceExtension({
-		getRevealStrategy: (node) => {
-			if (node.name === 'QuoteMark') {
-				return 'line';
-			}
-			if (node.name === 'CodeMark') {
-				if (node.node.parent?.name === 'FencedCode') {
+		makeInlineReplaceExtension({
+			getRevealStrategy: renderMode === InlineMarkupRenderMode.Normal ? (node) => {
+				if (node.name === 'QuoteMark') {
 					return 'line';
 				}
-			}
-
-			return 'active';
-		},
-		createDecoration: (node, state) => {
-			if (shouldFullReplace(node, state)) {
-				return hideDecoration;
-			}
-			return null;
-		},
-		getDecorationRange: (node, state) => {
-			// Headers in the form "## Header" should have the "##"s and the
-			// space immediately after hidden
-			if (node.name === 'HeaderMark') {
-				const markerLine = state.doc.lineAt(node.from);
-
-				// Certain header styles DON'T have a space after the header mark:
-				const hasRoomForSpace = node.to + 1 >= markerLine.to;
-				if (hasRoomForSpace) {
-					return null;
+				if (node.name === 'CodeMark') {
+					if (node.node.parent?.name === 'FencedCode') {
+						return 'line';
+					}
 				}
 
-				// Include the space in the hidden region, if it's available
-				if (state.doc.sliceString(node.to, node.to + 1) === ' ') {
-					return [node.from, node.to + 1];
+				return 'active';
+			} : undefined,
+			createDecoration: (node, state) => {
+				if (shouldFullReplace(node, state)) {
+					return hideDecoration;
 				}
-			}
+				return null;
+			},
+			getDecorationRange: (node, state) => {
+				// Headers in the form "## Header" should have the "##"s and the
+				// space immediately after hidden
+				if (node.name === 'HeaderMark') {
+					const markerLine = state.doc.lineAt(node.from);
 
-			return null;
-		},
-	}),
-];
+					// Certain header styles DON'T have a space after the header mark:
+					const hasRoomForSpace = node.to + 1 >= markerLine.to;
+					if (hasRoomForSpace) {
+						return null;
+					}
+
+					// Include the space in the hidden region, if it's available
+					if (state.doc.sliceString(node.to, node.to + 1) === ' ') {
+						return [node.from, node.to + 1];
+					}
+				}
+
+				return null;
+			},
+		}),
+	];
+};
 
 export default replaceFormatCharacters;

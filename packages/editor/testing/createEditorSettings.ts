@@ -1,5 +1,5 @@
 import { themeStyle } from '@joplin/lib/theme';
-import { EditorKeymap, EditorLanguageType, EditorSettings } from '../types';
+import { EditorKeymap, EditorLanguageType, EditorSettings, InlineMarkupRenderMode } from '../types';
 
 const createEditorSettings = (themeId: number) => {
 	const themeData = { themeId, ...themeStyle(themeId) };
@@ -14,6 +14,7 @@ const createEditorSettings = (themeId: number) => {
 		autocompleteMarkup: true,
 		tabMovesFocus: false,
 		inlineRenderingEnabled: true,
+		inlineMarkupRenderMode: InlineMarkupRenderMode.Normal,
 		highlightActiveLine: false,
 
 		keymap: EditorKeymap.Default,

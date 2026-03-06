@@ -1528,7 +1528,25 @@ const builtInMetadata = (Setting: typeof SettingType) => {
 			public: true,
 			appTypes: [AppType.Desktop, AppType.Mobile],
 			label: () => _('Markdown editor: Render markup in editor'),
-			description: () => _('Renders markup on all lines that don\'t include the cursor.'),
+			description: () => _('Renders markup on all text that doesn\'t include the cursor.'),
+			section: 'editor',
+			storage: SettingStorage.File,
+		},
+		'editor.inlineRenderingMode': {
+			value: 'normal',
+			type: SettingItemType.String,
+			public: true,
+			appTypes: [AppType.Desktop],
+			isEnum: true,
+			label: () => _('Markdown editor: Render markup mode'),
+			description: () => _('Accessible mode only renders markup for checkboxes and inline HTML for more consistent behavior with screen readers'),
+			options: () => {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+				const output: any = {};
+				output.normal = _('Normal');
+				output.accessible = _('Accessible');
+				return output;
+			},
 			section: 'editor',
 			storage: SettingStorage.File,
 		},

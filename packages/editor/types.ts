@@ -172,6 +172,11 @@ export enum EditorKeymap {
 	Emacs = 'emacs',
 }
 
+export enum InlineMarkupRenderMode {
+	Normal = 'normal',
+	Accessible = 'accessible',
+}
+
 export interface EditorTheme extends Theme {
 	themeId: number;
 	fontFamily: string;
@@ -212,6 +217,7 @@ export interface EditorSettings {
 	katexEnabled: boolean;
 	spellcheckEnabled: boolean;
 	inlineRenderingEnabled: boolean;
+	inlineMarkupRenderMode: InlineMarkupRenderMode;
 	imageRenderingEnabled: boolean;
 	readOnly: boolean;
 	highlightActiveLine: boolean;

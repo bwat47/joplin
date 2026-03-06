@@ -16,7 +16,7 @@ import { MarkupToHtml } from '@joplin/renderer';
 import { clipboard } from 'electron';
 import { reg } from '@joplin/lib/registry';
 import ErrorBoundary from '../../../../ErrorBoundary';
-import { EditorKeymap, EditorLanguageType, EditorSettings, SearchState, UserEventSource } from '@joplin/editor/types';
+import { EditorKeymap, EditorLanguageType, EditorSettings, InlineMarkupRenderMode, SearchState, UserEventSource } from '@joplin/editor/types';
 import useStyles from '../utils/useStyles';
 import { EditorEvent, EditorEventType } from '@joplin/editor/events';
 import useScrollHandler from '../utils/useScrollHandler';
@@ -354,6 +354,7 @@ const CodeMirror = (props: NoteBodyEditorProps, ref: ForwardedRef<NoteBodyEditor
 			markdownMarkEnabled: Setting.value('markdown.plugin.mark'),
 			katexEnabled: Setting.value('markdown.plugin.katex'),
 			inlineRenderingEnabled: Setting.value('editor.inlineRendering'),
+			inlineMarkupRenderMode: Setting.value('editor.inlineRenderingMode') as InlineMarkupRenderMode,
 			imageRenderingEnabled: Setting.value('editor.imageRendering'),
 			highlightActiveLine: Setting.value('editor.highlightActiveLine'),
 			themeData: {

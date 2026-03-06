@@ -14,7 +14,7 @@ import { EditorControl as EditorBodyControl, ContentScriptData } from '@joplin/e
 import { EditorControl, EditorSettings, EditorType } from './types';
 import { _ } from '@joplin/lib/locale';
 import { ChangeEvent, EditorEvent, EditorEventType, EditorScrolledEvent, SelectionRangeChangeEvent, UndoRedoDepthChangeEvent } from '@joplin/editor/events';
-import { EditorCommandType, EditorKeymap, EditorLanguageType, SearchState } from '@joplin/editor/types';
+import { EditorCommandType, EditorKeymap, EditorLanguageType, InlineMarkupRenderMode, SearchState } from '@joplin/editor/types';
 import SelectionFormatting, { defaultSelectionFormatting } from '@joplin/editor/SelectionFormatting';
 import { PluginStates } from '@joplin/lib/services/plugins/reducer';
 import useEditorCommandHandler from './hooks/useEditorCommandHandler';
@@ -282,6 +282,7 @@ const useEditorSettings = (props: Props) => {
 		katexEnabled: Setting.value('markdown.plugin.katex'),
 		spellcheckEnabled: Setting.value('editor.mobile.spellcheckEnabled'),
 		inlineRenderingEnabled,
+		inlineMarkupRenderMode: InlineMarkupRenderMode.Normal,
 		imageRenderingEnabled: props.editorImageRendering,
 		language: props.markupLanguage === MarkupLanguage.Html ? EditorLanguageType.Html : EditorLanguageType.Markdown,
 		useExternalSearch: true,
