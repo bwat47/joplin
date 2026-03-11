@@ -197,7 +197,7 @@ export const handleEditorContextMenuFilter = async (context?: EditorContextMenuF
 	return output;
 };
 
-export const buildMenuItems = async (items: ContextMenuItems, options: ContextMenuOptions) => {
+export const buildMenuItems = async (items: ContextMenuItems, options: ContextMenuOptions, skipEditorContextMenuFilter = false) => {
 	const activeItems: ContextMenuItem[] = [];
 	for (const itemKey in items) {
 		const item = items[itemKey];
@@ -206,7 +206,7 @@ export const buildMenuItems = async (items: ContextMenuItems, options: ContextMe
 		}
 	}
 
-	const extraItems = await handleEditorContextMenuFilter({
+	const extraItems = skipEditorContextMenuFilter ? [] : await handleEditorContextMenuFilter({
 		resourceId: options.resourceId,
 		itemType: options.itemType,
 		textToCopy: options.textToCopy,

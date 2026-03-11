@@ -379,7 +379,9 @@ const useContextMenu = (props: ContextMenuProps) => {
 					mdToHtml: null,
 				};
 
-				const resourceMenuItems = await buildMenuItems(menuItems(props.dispatch), contextMenuOptions);
+				// Skip handleEditorContextMenuFilter since it was already called above
+				// for the text context menu — prevents duplicate plugin items.
+				const resourceMenuItems = await buildMenuItems(menuItems(props.dispatch), contextMenuOptions, true);
 
 				if (resourceMenuItems.length) {
 					menu.append(new MenuItem({ type: 'separator' }));
