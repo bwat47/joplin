@@ -19,6 +19,7 @@ import renderTables from './extensions/rendering/renderTables';
 import { RenderedContentContext } from './extensions/rendering/types';
 import highlightActiveLineExtension from './extensions/highlightActiveLineExtension';
 import renderBlockImages from './extensions/rendering/renderBlockImages';
+import wrappedLineIndentExtension from './extensions/wrappedLineIndentExtension';
 
 const closingFencedBlock = StateField.define<boolean>({
 	create: () => false,
@@ -122,6 +123,10 @@ const configFromSettings = (settings: EditorSettings, context: RenderedContentCo
 
 	if (settings.imageRenderingEnabled) {
 		extensions.push(renderBlockImages(context));
+	}
+
+	if (settings.wrappedLineIndentEnabled && settings.language === EditorLanguageType.Markdown) {
+		extensions.push(wrappedLineIndentExtension);
 	}
 
 	if (settings.highlightActiveLine) {

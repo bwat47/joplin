@@ -67,6 +67,7 @@ interface Props {
 	editorImageRendering: boolean;
 	editorTableEditing: boolean;
 	editorInlineRendering: boolean;
+	editorWrappedLineIndent: boolean;
 
 	onScroll: OnScroll;
 	onChange: OnChange;
@@ -284,6 +285,7 @@ const useEditorSettings = (props: Props) => {
 		katexEnabled: Setting.value('markdown.plugin.katex'),
 		spellcheckEnabled: Setting.value('editor.mobile.spellcheckEnabled'),
 		inlineRenderingEnabled,
+		wrappedLineIndentEnabled: props.editorWrappedLineIndent,
 		tableEditingEnabled: props.editorTableEditing,
 		imageRenderingEnabled: props.editorImageRendering,
 		language: props.markupLanguage === MarkupLanguage.Html ? EditorLanguageType.Html : EditorLanguageType.Markdown,
@@ -303,7 +305,7 @@ const useEditorSettings = (props: Props) => {
 		indentWithTabs: true,
 
 		editorLabel: _('Markdown editor'),
-	}), [props.themeId, props.readOnly, props.markupLanguage, highlightActiveLine, inlineRenderingEnabled, props.editorImageRendering, props.editorTableEditing]);
+	}), [props.themeId, props.readOnly, props.markupLanguage, highlightActiveLine, inlineRenderingEnabled, props.editorImageRendering, props.editorTableEditing, props.editorWrappedLineIndent]);
 
 	return editorSettings;
 };
@@ -514,6 +516,7 @@ export default connect((state: AppState) => {
 	return {
 		themeId: state.settings.theme,
 		editorInlineRendering: state.settings['editor.inlineRendering'],
+		editorWrappedLineIndent: state.settings['editor.wrappedLineIndent'],
 		editorTableEditing: state.settings['editor.tableEditing'],
 		editorImageRendering: state.settings['editor.imageRendering'],
 	};

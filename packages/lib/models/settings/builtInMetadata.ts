@@ -1570,6 +1570,16 @@ const builtInMetadata = (Setting: typeof SettingType) => {
 			section: 'editor',
 			storage: SettingStorage.File,
 		},
+		'editor.wrappedLineIndent': {
+			value: true,
+			type: SettingItemType.Bool,
+			public: true,
+			appTypes: [AppType.Desktop, AppType.Mobile],
+			label: () => _('Markdown editor: Wrapped line indentation'),
+			description: () => _('Aligns wrapped Markdown lines with their list, quote, or whitespace prefix.'),
+			section: 'editor',
+			storage: SettingStorage.File,
+		},
 		'editor.tableEditing': {
 			value: true,
 			type: SettingItemType.Bool,

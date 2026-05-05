@@ -15,6 +15,7 @@ const createEditorSettings = (themeId: number) => {
 		autocompleteMarkup: true,
 		tabMovesFocus: false,
 		inlineRenderingEnabled: true,
+		wrappedLineIndentEnabled: true,
 		tableEditingEnabled: true,
 		highlightActiveLine: false,
 
