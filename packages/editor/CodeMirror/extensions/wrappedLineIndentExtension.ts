@@ -12,6 +12,7 @@ const measurementsChanged = StateEffect.define<void>();
 interface MeasurementTarget {
 	fallbackKey: string;
 	from: number;
+	leadingSpaces: number;
 	to: number;
 }
 
@@ -19,6 +20,7 @@ interface MeasureReadResult {
 	linePaddingLeft: number;
 	isStale: boolean;
 	needsRetry: boolean;
+	spaceCharacterWidth: number | null;
 	widths: Map<string, number>;
 }
 
@@ -162,15 +164,37 @@ const addTabReplacementDecorations = (
 	}
 };
 
-const estimatePrefixWidth = (prefix: string, view: EditorView): number => {
+const estimatePrefixWidth = (prefix: string, view: EditorView, spaceCharacterWidth: number | null = null): number => {
 	const characterWidth = view.defaultCharacterWidth / view.scaleX;
 	let width = 0;
 
 	for (let index = 0; index < prefix.length; index++) {
-		width += prefix[index] === '\t' ? getTabReplacementWidth(prefix.slice(0, index), view.state.tabSize, characterWidth) : characterWidth;
+		const character = prefix[index];
+		if (character === '\t') {
+			width += getTabReplacementWidth(prefix.slice(0, index), view.state.tabSize, characterWidth);
+		} else if (character === ' ') {
+			width += spaceCharacterWidth ?? characterWidth;
+		} else {
+			width += characterWidth;
+		}
 	}
 
 	return width;
+};
+
+const measureSpaceCharacterWidth = (view: EditorView, target: MeasurementTarget): number | null => {
+	if (target.leadingSpaces === 0) {
+		return null;
+	}
+
+	const startCoords = view.coordsAtPos(target.from, 1);
+	const endCoords = view.coordsAtPos(target.from + 1, -1);
+	if (!startCoords || !endCoords) {
+		return null;
+	}
+
+	const width = endCoords.left - startCoords.left;
+	return width > 0 ? width : null;
 };
 
 export const getLineDecorationStyle = (width: number, linePaddingLeft: number): string => {
@@ -240,6 +264,7 @@ class WrappedLineIndentPlugin implements PluginValue {
 	private incompleteMeasurementRefreshSpent = false;
 	private refreshFrame: number | null = null;
 	private linePadding: LinePaddingMeasurement = { status: 'unknown', value: 0 };
+	private spaceCharacterWidth: number | null = null;
 
 	public constructor(private readonly view: EditorView) {
 		this.measurementSignature = getMeasurementSignature(view);
@@ -255,6 +280,7 @@ class WrappedLineIndentPlugin implements PluginValue {
 			this.measurementSignature = nextMeasurementSignature;
 			this.fallbackPrefixWidths.clear();
 			this.markLinePaddingStale();
+			this.spaceCharacterWidth = null;
 		}
 
 		if (fullDocumentReplaced) {
@@ -353,6 +379,7 @@ class WrappedLineIndentPlugin implements PluginValue {
 			this.pendingMeasurements.set(lineKey, {
 				fallbackKey: getFallbackPrefixKey(prefix.text),
 				from: line.from,
+				leadingSpaces: /^ +/.exec(prefix.text)?.[0].length ?? 0,
 				to: prefixTo,
 			});
 		}
@@ -360,7 +387,7 @@ class WrappedLineIndentPlugin implements PluginValue {
 		const fallbackWidth = this.fallbackPrefixWidths.get(getFallbackPrefixKey(prefix.text));
 		let decorationWidth = measuredWidth ?? fallbackWidth;
 		if (decorationWidth === undefined && this.canUseEstimatedPrefixWidth()) {
-			decorationWidth = estimatePrefixWidth(prefix.text, this.view);
+			decorationWidth = estimatePrefixWidth(prefix.text, this.view, this.spaceCharacterWidth);
 		}
 
 		if (decorationWidth !== undefined && decorationWidth > 0) {
@@ -419,6 +446,11 @@ class WrappedLineIndentPlugin implements PluginValue {
 				}
 				this.linePadding = { status: 'measured', value: result.linePaddingLeft };
 
+				if (result.spaceCharacterWidth !== null && this.spaceCharacterWidth !== result.spaceCharacterWidth) {
+					this.spaceCharacterWidth = result.spaceCharacterWidth;
+					changed = true;
+				}
+
 				for (const [lineKey, width] of result.widths) {
 					if (this.measuredLineWidths.get(lineKey) !== width) {
 						this.measuredLineWidths.set(lineKey, width);
@@ -464,6 +496,7 @@ class WrappedLineIndentPlugin implements PluginValue {
 			linePaddingLeft: this.linePadding.value,
 			isStale: false,
 			needsRetry: false,
+			spaceCharacterWidth: this.spaceCharacterWidth,
 			widths: new Map<string, number>(),
 		};
 	}
@@ -488,10 +521,17 @@ class WrappedLineIndentPlugin implements PluginValue {
 		const measuredWidths = new Map<string, number>();
 		const linePaddingLeft = getLinePaddingLeft(view, fallbackPaddingLeft);
 		if (view.state.doc !== measuredDoc) {
-			return { linePaddingLeft, isStale: true, needsRetry: false, widths: measuredWidths };
+			return {
+				linePaddingLeft,
+				isStale: true,
+				needsRetry: false,
+				spaceCharacterWidth: this.spaceCharacterWidth,
+				widths: measuredWidths,
+			};
 		}
 
 		let needsRetry = false;
+		let measuredSpaceCharacterWidth = this.spaceCharacterWidth;
 		for (const [lineKey, target] of targets) {
 			const startCoords = view.coordsAtPos(target.from, 1);
 			const endCoords = view.coordsAtPos(target.to, -1);
@@ -508,9 +548,19 @@ class WrappedLineIndentPlugin implements PluginValue {
 			}
 
 			measuredWidths.set(lineKey, width);
+
+			if (measuredSpaceCharacterWidth === null) {
+				measuredSpaceCharacterWidth = measureSpaceCharacterWidth(view, target);
+			}
 		}
 
-		return { linePaddingLeft, isStale: false, needsRetry, widths: measuredWidths };
+		return {
+			linePaddingLeft,
+			isStale: false,
+			needsRetry,
+			spaceCharacterWidth: measuredSpaceCharacterWidth,
+			widths: measuredWidths,
+		};
 	}
 }
 

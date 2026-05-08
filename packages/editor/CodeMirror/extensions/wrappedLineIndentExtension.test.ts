@@ -19,6 +19,15 @@ describe('wrappedLineIndentExtension', () => {
 	const scaleX = Object.getOwnPropertyDescriptor(EditorView.prototype, 'scaleX');
 	const scaleY = Object.getOwnPropertyDescriptor(EditorView.prototype, 'scaleY');
 
+	const flushAnimationFrames = () => {
+		const callbacks = queuedAnimationFrames;
+		queuedAnimationFrames = [];
+
+		for (const callback of callbacks) {
+			callback(0);
+		}
+	};
+
 	beforeEach(() => {
 		queuedAnimationFrames = [];
 		EditorView.prototype.requestMeasure = function(spec) {
@@ -115,13 +124,64 @@ describe('wrappedLineIndentExtension', () => {
 			[wrappedLineIndentExtension],
 		);
 
-		for (const callback of queuedAnimationFrames) {
-			callback(0);
-		}
+		flushAnimationFrames();
 
 		const wrappedLine = editor.contentDOM.querySelector<HTMLElement>('.cm-wrapped-line-indent');
 		expect(wrappedLine).not.toBeNull();
 		expect(wrappedLine?.getAttribute('style')).toContain('padding-left: 20px; text-indent: -20px;');
+
+		editor.destroy();
+	});
+
+	it('uses cached measured space width for a newly deeper space indent', async () => {
+		Object.defineProperty(EditorView.prototype, 'defaultCharacterWidth', {
+			configurable: true,
+			get: () => 8,
+		});
+
+		EditorView.prototype.coordsAtPos = function(position) {
+			const line = this.state.doc.lineAt(position);
+			const offset = position - line.from;
+			const leadingSpaces = /^ */.exec(line.text)?.[0].length ?? 0;
+			const left = Math.min(offset, leadingSpaces) * 6 + Math.max(0, offset - leadingSpaces) * 8;
+
+			return {
+				bottom: 16,
+				left,
+				right: left,
+				top: 0,
+				x: left,
+				y: 0,
+				height: 16,
+				width: 0,
+			} as DOMRect;
+		};
+
+		const editorText = ' first item';
+		const editor = await createTestEditor(
+			editorText,
+			EditorSelection.cursor(editorText.length),
+			[],
+			[wrappedLineIndentExtension],
+		);
+
+		flushAnimationFrames();
+		flushAnimationFrames();
+		const getWrappedLinePaddingLeft = () => {
+			return editor.contentDOM.querySelector<HTMLElement>('.cm-wrapped-line-indent')?.style.paddingLeft;
+		};
+
+		expect(getWrappedLinePaddingLeft()).toBe('6px');
+
+		editor.dispatch({
+			changes: { from: editor.state.doc.line(1).from, insert: ' ' },
+		});
+
+		expect(getWrappedLinePaddingLeft()).toBe('12px');
+
+		flushAnimationFrames();
+		flushAnimationFrames();
+		expect(getWrappedLinePaddingLeft()).toBe('12px');
 
 		editor.destroy();
 	});
