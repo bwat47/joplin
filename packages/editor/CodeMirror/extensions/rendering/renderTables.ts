@@ -5,10 +5,9 @@
 // - Enter in last cell → adds new row
 // - Tab/Shift+Tab → navigate cells
 
-import { EditorView, WidgetType } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
-import { SyntaxNodeRef } from '@lezer/common';
-import makeBlockReplaceExtension from './utils/makeBlockReplaceExtension';
+import { EditorView, WidgetType, Decoration, ViewPlugin, ViewUpdate } from '@codemirror/view';
+import { EditorState, Range, StateField, Transaction } from '@codemirror/state';
+import { syntaxTree } from '@codemirror/language';
 import { focus, blur } from '@joplin/lib/utils/focusHandler';
 import {
 	parseTable, serializeTable,
@@ -28,22 +27,295 @@ const CTX = 'cm-tw-ctx';
 // heights correctly for scroll position and coordinate mapping.
 const tableHeightCache = new Map<string, number>();
 
+type CellCoord = { row: number; col: number };
+type CellSelection = { anchor: number; head: number };
+
+export interface TableDescriptor {
+	id: string;
+	from: number;
+	to: number;
+	sourceText: string;
+	lastDispatchedText: string;
+	table: Table;
+	activeCell: CellCoord | null;
+	activeSelection: CellSelection | null;
+	pendingFocus: CellCoord | null;
+	scrollLeft: number;
+	contentVersion: number;
+	structureVersion: number;
+	dirty: boolean;
+	dispatchScheduled: boolean;
+}
+
+export const cellTextCodec = {
+	toDraft: (tableCellContent: string): string => {
+		return tableCellContent.replace(/<br>/gi, '\n').replace(/\\\|/g, '|');
+	},
+
+	toTableCellContent: (draft: string): string => {
+		return draft.replace(/\n/g, '<br>').replace(/\|/g, '\\|');
+	},
+};
+
+let nextTableDescriptorId = 1;
+
+const makeTableDescriptor = (from: number, to: number, sourceText: string, table: Table): TableDescriptor => ({
+	id: `cm-table-${nextTableDescriptorId++}`,
+	from,
+	to,
+	sourceText,
+	lastDispatchedText: sourceText,
+	table,
+	activeCell: null,
+	activeSelection: null,
+	pendingFocus: null,
+	scrollLeft: 0,
+	contentVersion: 0,
+	structureVersion: 0,
+	dirty: false,
+	dispatchScheduled: false,
+});
+
+const cloneTable = (table: Table): Table => ({
+	header: { cells: table.header.cells.map(cell => ({ ...cell })) },
+	alignments: [...table.alignments],
+	body: table.body.map(row => ({ cells: row.cells.map(cell => ({ ...cell })) })),
+});
+
+const descriptorSerializedText = (descriptor: TableDescriptor) => serializeTable(descriptor.table);
+
+const tableTextWithFollowingSeparator = (view: EditorView, descriptor: TableDescriptor, tableText: string) => {
+	const afterTable = descriptor.to < view.state.doc.length ? view.state.doc.sliceString(descriptor.to, Math.min(descriptor.to + 2, view.state.doc.length)) : '';
+	const needsBlankLine = !afterTable.startsWith('\n\n');
+	return needsBlankLine ? `${tableText}\n` : tableText;
+};
+
+const findTableSpans = (state: EditorState) => {
+	const spans: { from: number; to: number; text: string; table: Table }[] = [];
+	const seen = new Set<number>();
+	syntaxTree(state).iterate({
+		enter: node => {
+			if (node.name !== 'TableHeader') return;
+			const startLine = state.doc.lineAt(node.from);
+			if (seen.has(startLine.from)) return;
+			let endLine = startLine;
+			for (let n = startLine.number + 1; n <= state.doc.lines; n++) {
+				const line = state.doc.line(n);
+				if (line.text.trim().startsWith('|') || line.text.includes('|')) {
+					endLine = line;
+				} else {
+					break;
+				}
+			}
+
+			const text = state.doc.sliceString(startLine.from, endLine.to);
+			const table = parseTable(text);
+			if (!table) return;
+
+			seen.add(startLine.from);
+			spans.push({ from: startLine.from, to: endLine.to, text, table });
+		},
+	});
+	return spans;
+};
+
+const updateTableDecorations = (descriptors: readonly TableDescriptor[]) => {
+	const widgets: Range<Decoration>[] = [];
+	for (const descriptor of descriptors) {
+		widgets.push(Decoration.replace({
+			widget: new TableWidget(descriptor),
+			block: true,
+		}).range(descriptor.from, descriptor.to));
+	}
+	return Decoration.set(widgets, true);
+};
+
+const reconcileTableDescriptors = (
+	state: EditorState,
+	previous: readonly TableDescriptor[],
+	transaction?: Transaction,
+) => {
+	const mappedPrevious = previous.map(descriptor => ({
+		descriptor,
+		from: transaction ? transaction.changes.mapPos(descriptor.from, 1) : descriptor.from,
+		to: transaction ? transaction.changes.mapPos(descriptor.to, -1) : descriptor.to,
+		used: false,
+	}));
+
+	const descriptors: TableDescriptor[] = [];
+	for (const span of findTableSpans(state)) {
+		const match = mappedPrevious.find(candidate => !candidate.used
+			&& candidate.from === span.from
+			&& candidate.to === span.to);
+		const descriptor = match?.descriptor ?? makeTableDescriptor(span.from, span.to, span.text, span.table);
+		if (match) match.used = true;
+
+		descriptor.from = span.from;
+		descriptor.to = span.to;
+		descriptor.sourceText = span.text;
+
+		if (descriptor.dirty) {
+			if (span.text === descriptorSerializedText(descriptor) || span.text === descriptor.lastDispatchedText) {
+				descriptor.dirty = false;
+				descriptor.dispatchScheduled = false;
+				descriptor.lastDispatchedText = span.text;
+			}
+		} else if (span.text !== descriptor.lastDispatchedText) {
+			descriptor.table = cloneTable(span.table);
+			descriptor.lastDispatchedText = span.text;
+			descriptor.contentVersion++;
+		}
+
+		descriptors.push(descriptor);
+	}
+	return descriptors;
+};
+
+export const testing__resetTableDescriptorIds = () => {
+	nextTableDescriptorId = 1;
+};
+
+export const tableDescriptorField = StateField.define<readonly TableDescriptor[]>({
+	create: state => reconcileTableDescriptors(state, []),
+	update: (descriptors, transaction) => {
+		const selectionChanged = !transaction.newSelection.eq(transaction.startState.selection);
+		const treeChanged = syntaxTree(transaction.state) !== syntaxTree(transaction.startState);
+		if (transaction.docChanged || selectionChanged || treeChanged) {
+			return reconcileTableDescriptors(transaction.state, descriptors, transaction);
+		}
+		return descriptors;
+	},
+	provide: field => EditorView.decorations.compute([field], state => updateTableDecorations(state.field(field))),
+});
+
+class TableEditingController {
+	public constructor(private view: EditorView) {}
+
+	public update(update: ViewUpdate) {
+		if (update.docChanged || update.viewportChanged) {
+			this.restorePendingFocus();
+		}
+	}
+
+	public destroy() {
+		for (const descriptor of this.view.state.field(tableDescriptorField, false) ?? []) {
+			this.flushDescriptor(descriptor);
+		}
+	}
+
+	public markCellActive(descriptor: TableDescriptor, row: number, col: number) {
+		descriptor.activeCell = { row, col };
+		const tableRange = { from: descriptor.from, to: descriptor.to, text: descriptor.sourceText };
+		const cellPos = getCellContentPosition(this.view.state, tableRange, row, col);
+		if (cellPos !== null) {
+			this.view.dispatch({ selection: { anchor: cellPos, head: cellPos } });
+		}
+	}
+
+	public updateCell(descriptor: TableDescriptor, coord: CellCoord, draftText: string) {
+		const content = cellTextCodec.toTableCellContent(draftText);
+		const cell = coord.row === 0
+			? descriptor.table.header.cells[coord.col]
+			: descriptor.table.body[coord.row - 1]?.cells[coord.col];
+		if (!cell || cell.content === content) return;
+		cell.content = content;
+		descriptor.contentVersion++;
+		this.markDirty(descriptor);
+	}
+
+	public updateAllCellsFromDOM(descriptor: TableDescriptor, container: HTMLElement) {
+		for (const textDiv of Array.from(container.querySelectorAll<HTMLElement>('.cm-tw-text'))) {
+			const row = Number(textDiv.dataset.row);
+			const col = Number(textDiv.dataset.col);
+			if (Number.isNaN(row) || Number.isNaN(col)) continue;
+			this.updateCell(descriptor, { row, col }, textDiv.textContent ?? '');
+		}
+	}
+
+	public mutateTable(descriptor: TableDescriptor, table: Table | null, pendingFocus: CellCoord | null = null) {
+		if (!table) return;
+		descriptor.table = table;
+		descriptor.structureVersion++;
+		descriptor.contentVersion++;
+		descriptor.pendingFocus = pendingFocus;
+		this.markDirty(descriptor);
+		this.flushDescriptor(descriptor);
+	}
+
+	public deleteTable(descriptor: TableDescriptor) {
+		this.view.dispatch({ changes: { from: descriptor.from, to: descriptor.to, insert: '' } });
+	}
+
+	public flushDescriptor(descriptor: TableDescriptor) {
+		if (!descriptor.dirty) return;
+		const tableText = descriptorSerializedText(descriptor);
+		if (tableText === descriptor.lastDispatchedText) {
+			descriptor.dirty = false;
+			descriptor.dispatchScheduled = false;
+			return;
+		}
+
+		descriptor.dispatchScheduled = false;
+		descriptor.lastDispatchedText = tableText;
+		descriptor.pendingFocus ??= descriptor.activeCell;
+		this.view.dispatch({
+			changes: {
+				from: descriptor.from,
+				to: descriptor.to,
+				insert: tableTextWithFollowingSeparator(this.view, descriptor, tableText),
+			},
+		});
+	}
+
+	private markDirty(descriptor: TableDescriptor) {
+		descriptor.dirty = descriptorSerializedText(descriptor) !== descriptor.lastDispatchedText;
+		if (!descriptor.dirty || descriptor.dispatchScheduled) return;
+
+		descriptor.dispatchScheduled = true;
+		const win = this.view.dom.ownerDocument.defaultView ?? window;
+		win.setTimeout(() => this.flushDescriptor(descriptor), 100);
+	}
+
+	private restorePendingFocus() {
+		for (const descriptor of this.view.state.field(tableDescriptorField, false) ?? []) {
+			if (!descriptor.pendingFocus) continue;
+			const coord = descriptor.pendingFocus;
+			descriptor.pendingFocus = null;
+			requestAnimationFrame(() => {
+				const container = this.findContainer(descriptor);
+				if (!container) return;
+				if (descriptor.scrollLeft > 0) container.scrollLeft = descriptor.scrollLeft;
+				const target = container.querySelector<HTMLElement>(`.cm-tw-text[data-row="${coord.row}"][data-col="${coord.col}"]`);
+				if (target) focus('TableWidget', target);
+			});
+		}
+	}
+
+	private findContainer(descriptor: TableDescriptor): HTMLElement | null {
+		return this.view.dom.querySelector<HTMLElement>(`.${W}[data-table-id="${descriptor.id}"]`);
+	}
+}
+
+const tableEditingPlugin = ViewPlugin.fromClass(TableEditingController);
+
 class TableWidget extends WidgetType {
 	public constructor(
-		private tableText: string,
-		private from: number,
-		private to: number,
+		private descriptor: TableDescriptor,
 	) {
 		super();
-		this.cacheKey_ = `table_${from}_${to}_${tableText.length}`;
+		this.cacheKey_ = `table_${descriptor.id}_${descriptor.contentVersion}_${descriptor.structureVersion}`;
+		this.contentVersion_ = descriptor.contentVersion;
+		this.structureVersion_ = descriptor.structureVersion;
 	}
 
 	private cacheKey_: string;
+	private contentVersion_: number;
+	private structureVersion_: number;
 
 	public eq(other: TableWidget) {
-		return this.tableText === other.tableText
-			&& this.from === other.from
-			&& this.to === other.to;
+		return this.descriptor === other.descriptor
+			&& this.contentVersion_ === other.contentVersion_
+			&& this.structureVersion_ === other.structureVersion_;
 	}
 
 	public get estimatedHeight() {
@@ -52,15 +324,7 @@ class TableWidget extends WidgetType {
 
 	// Find this widget's container after a rebuild by matching the document position.
 	private findContainer(view: EditorView): HTMLElement | null {
-		const containers = view.dom.querySelectorAll(`.${W}`);
-		for (const c of containers) {
-			try {
-				const pos = view.posAtDOM(c);
-				if (Math.abs(pos - this.from) < 3) return c as HTMLElement;
-			} catch (_) { /* ignore */ }
-		}
-		// Fallback: return first container if only one table exists
-		return containers.length === 1 ? containers[0] as HTMLElement : null;
+		return view.dom.querySelector<HTMLElement>(`.${W}[data-table-id="${this.descriptor.id}"]`);
 	}
 
 	// Save the horizontal scroll position of this widget's container before
@@ -68,6 +332,7 @@ class TableWidget extends WidgetType {
 	private saveAndRestoreScroll(view: EditorView) {
 		const container = this.findContainer(view);
 		const scrollLeft = container ? container.scrollLeft : 0;
+		this.descriptor.scrollLeft = scrollLeft;
 		if (scrollLeft > 0) {
 			requestAnimationFrame(() => {
 				const newContainer = this.findContainer(view);
@@ -80,17 +345,9 @@ class TableWidget extends WidgetType {
 	// A trailing newline is appended when needed to ensure a blank line
 	// separates the table from subsequent text, preventing the parser
 	// from absorbing later lines as extra table rows.
-	private apply(view: EditorView, newTable: Table | null) {
-		if (!newTable) return;
+	private apply(view: EditorView, newTable: Table | null, pendingFocus: CellCoord | null = null) {
 		this.saveAndRestoreScroll(view);
-		const newText = serializeTable(newTable);
-		const doc = view.state.doc;
-		const afterTable = this.to < doc.length ? doc.sliceString(this.to, Math.min(this.to + 2, doc.length)) : '';
-		const needsBlankLine = !afterTable.startsWith('\n\n');
-		const insert = needsBlankLine ? `${newText}\n` : newText;
-		view.dispatch({
-			changes: { from: this.from, to: this.to, insert },
-		});
+		view.plugin(tableEditingPlugin)?.mutateTable(this.descriptor, newTable, pendingFocus);
 	}
 
 	public toDOM(view: EditorView) {
@@ -99,10 +356,10 @@ class TableWidget extends WidgetType {
 		const doc = view.dom.ownerDocument;
 		const win = doc.defaultView!;
 
-		const table = parseTable(this.tableText);
+		const table = this.descriptor.table;
 		if (!table) {
 			const pre = doc.createElement('pre');
-			pre.textContent = this.tableText;
+			pre.textContent = this.descriptor.sourceText;
 			return pre;
 		}
 
@@ -110,9 +367,11 @@ class TableWidget extends WidgetType {
 		const numBodyRows = table.body.length;
 		const totalRows = numBodyRows + 1;
 		const allCells: HTMLElement[][] = [];
+		const controller = view.plugin(tableEditingPlugin);
 
 		const container = doc.createElement('div');
 		container.classList.add(W);
+		container.dataset.tableId = this.descriptor.id;
 
 		const tableEl = doc.createElement('table');
 
@@ -126,22 +385,7 @@ class TableWidget extends WidgetType {
 		// Sync all dirty cells back to the table model (without dispatching).
 		// Must be called before any structural apply() so edits are not lost.
 		const syncDirtyCells = () => {
-			for (let ri = 0; ri < allCells.length; ri++) {
-				for (let ci = 0; ci < allCells[ri].length; ci++) {
-					const td = allCells[ri][ci].querySelector('.cm-tw-text') as HTMLElement;
-					if (!td) continue;
-					// Sanitise: newlines → <br>, pipes → escaped
-					const v = (td.textContent || '').trim().replace(/\n/g, '<br>').replace(/\|/g, '\\|');
-					const isH = ri === 0;
-					const orig = isH
-						? table.header.cells[ci]?.content
-						: table.body[ri - 1]?.cells[ci]?.content;
-					if (v !== orig) {
-						if (isH) table.header.cells[ci].content = v;
-						else if (ri - 1 < table.body.length) table.body[ri - 1].cells[ci].content = v;
-					}
-				}
-			}
+			controller?.updateAllCellsFromDOM(this.descriptor, container);
 		};
 
 		// ---- Editable cell ----
@@ -153,25 +397,20 @@ class TableWidget extends WidgetType {
 			// Editable text lives in its own div — cell itself is NOT editable
 			const textDiv = doc.createElement('div');
 			textDiv.classList.add('cm-tw-text');
+			textDiv.dataset.row = `${r}`;
+			textDiv.dataset.col = `${c}`;
 			textDiv.contentEditable = 'true';
 			textDiv.spellcheck = false;
-			// Display unescaped text — escaped pipes (\|) are shown as plain |
-			textDiv.textContent = text.replace(/\\\|/g, '|');
+			textDiv.textContent = cellTextCodec.toDraft(text);
 
 			// Sync CM cursor to this cell so toolbar commands work
 			textDiv.onfocus = () => {
 				lastFocusedTextDiv = textDiv;
-				const tableRange = {
-					from: this.from,
-					to: this.to,
-					text: this.tableText,
-				};
-				const cellPos = getCellContentPosition(view.state, tableRange, r, c);
-				if (cellPos !== null) {
-					view.dispatch({
-						selection: { anchor: cellPos, head: cellPos },
-					});
-				}
+				controller?.markCellActive(this.descriptor, r, c);
+			};
+
+			textDiv.oninput = () => {
+				controller?.updateCell(this.descriptor, { row: r, col: c }, textDiv.textContent || '');
 			};
 
 			textDiv.onblur = () => {
@@ -183,23 +422,21 @@ class TableWidget extends WidgetType {
 					// context menu action), the old container is detached.
 					// Do nothing — the rebuild already has the latest data.
 					if (!container.isConnected) return;
-					const v = (textDiv.textContent || '').trim();
+					const v = textDiv.textContent || '';
 					const orig = isHdr
 						? table.header.cells[c]?.content
 						: table.body[r - 1]?.cells[c]?.content;
-					if (v === orig) return;
+					if (cellTextCodec.toTableCellContent(v) === orig) return;
 					// If focus moved to another cell in this table, just
 					// update the in-memory model — no dispatch/rebuild.
 					// The markdown will sync on next structural edit or
 					// when focus leaves the table entirely.
 					if (scrollbarDragging || container.contains(doc.activeElement)) {
-						const sanitised = v.replace(/\n/g, '<br>').replace(/\|/g, '\\|');
-						if (isHdr) table.header.cells[c].content = sanitised;
-						else if (r - 1 < table.body.length) table.body[r - 1].cells[c].content = sanitised;
+						controller?.updateCell(this.descriptor, { row: r, col: c }, v);
 					} else {
 						// Focus left the table — sync all dirty cells to markdown
 						syncDirtyCells();
-						this.apply(view, table);
+						controller?.flushDescriptor(this.descriptor);
 					}
 				}, 80);
 			};
@@ -221,7 +458,7 @@ class TableWidget extends WidgetType {
 
 					// Check if any cell content actually changed
 					const newText = serializeTable(table);
-					const isDirty = newText !== this.tableText;
+					const isDirty = newText !== this.descriptor.lastDispatchedText;
 
 					// Compute target cell index
 					const flat = allCells.flat();
@@ -231,13 +468,10 @@ class TableWidget extends WidgetType {
 					if (nextIdx >= 0 && nextIdx < flat.length) {
 						if (isDirty) {
 							// Content changed — apply and refocus after rebuild
-							this.apply(view, table);
-							requestAnimationFrame(() => {
-								const newC = this.findContainer(view);
-								const cells = newC?.querySelectorAll('.cm-tw-text');
-								if (cells && nextIdx < cells.length) {
-									focus('TableWidget', cells[nextIdx] as HTMLElement);
-								}
+							const targetCell = flat[nextIdx] as HTMLElement;
+							this.apply(view, table, {
+								row: Number(targetCell.querySelector<HTMLElement>('.cm-tw-text')?.dataset.row ?? 0),
+								col: Number(targetCell.querySelector<HTMLElement>('.cm-tw-text')?.dataset.col ?? 0),
 							});
 						} else {
 							// No changes — just move focus, no rebuild needed
@@ -247,26 +481,18 @@ class TableWidget extends WidgetType {
 					} else if (!e.shiftKey) {
 						// Past last cell — add new row and focus its first cell
 						const newTable = addRow(table, numBodyRows - 1);
-						this.apply(view, newTable);
-						const newRowIdx = totalRows * numCols;
-						requestAnimationFrame(() => {
-							const newC = this.findContainer(view);
-							const cells = newC?.querySelectorAll('.cm-tw-text');
-							if (cells && newRowIdx < cells.length) {
-								focus('TableWidget', cells[newRowIdx] as HTMLElement);
-							}
-						});
+						this.apply(view, newTable, { row: totalRows, col: 0 });
 					}
 				} else if (e.key === 'Enter' && !e.shiftKey) {
 					e.preventDefault();
 					skipBlurSync = true;
 					syncDirtyCells();
 					if (r === totalRows - 1 && c === numCols - 1) {
-						this.apply(view, addRow(table, numBodyRows - 1));
+						this.apply(view, addRow(table, numBodyRows - 1), { row: totalRows, col: 0 });
 					} else {
 						// Only apply if content actually changed
 						const enterText = serializeTable(table);
-						if (enterText !== this.tableText) {
+						if (enterText !== this.descriptor.lastDispatchedText) {
 							this.apply(view, table);
 						}
 					}
@@ -308,16 +534,7 @@ class TableWidget extends WidgetType {
 				e.preventDefault();
 				e.stopPropagation();
 				syncDirtyCells();
-				this.apply(view, addColumn(table, afterCol));
-				// Focus the new column's header cell after rebuild
-				requestAnimationFrame(() => {
-					const newC = this.findContainer(view);
-					const cells = newC?.querySelectorAll('.cm-tw-text');
-					const targetIdx = afterCol + 1;
-					if (cells && targetIdx < cells.length) {
-						focus('TableWidget', cells[targetIdx] as HTMLElement);
-					}
-				});
+				this.apply(view, addColumn(table, afterCol), { row: 0, col: afterCol + 1 });
 			};
 			wrapper.appendChild(btn);
 			anchorCell.appendChild(wrapper);
@@ -337,17 +554,7 @@ class TableWidget extends WidgetType {
 				e.preventDefault();
 				e.stopPropagation();
 				syncDirtyCells();
-				this.apply(view, addRow(table, afterBodyIdx));
-				// Focus the first cell of the new row after rebuild
-				const newNumCols = numCols;
-				const targetIdx = (afterBodyIdx + 2) * newNumCols;
-				requestAnimationFrame(() => {
-					const newC = this.findContainer(view);
-					const cells = newC?.querySelectorAll('.cm-tw-text');
-					if (cells && targetIdx < cells.length) {
-						focus('TableWidget', cells[targetIdx] as HTMLElement);
-					}
-				});
+				this.apply(view, addRow(table, afterBodyIdx), { row: afterBodyIdx + 2, col: 0 });
 			};
 			wrapper.appendChild(btn);
 			anchorCell.appendChild(wrapper);
@@ -422,22 +629,22 @@ class TableWidget extends WidgetType {
 
 			type MenuItem = { label: string; action: ()=> void; hlRow?: number; hlCol?: number };
 			const items: MenuItem[] = [
-				{ label: '+ Insert row above', action: () => { syncDirtyCells(); this.apply(view, addRow(table, r <= 0 ? -1 : r - 2)); } },
-				{ label: '+ Insert row below', action: () => { syncDirtyCells(); this.apply(view, addRow(table, r === 0 ? -1 : r - 1)); } },
-				{ label: '+ Insert column left', action: () => { syncDirtyCells(); this.apply(view, addColumn(table, c - 1)); } },
-				{ label: '+ Insert column right', action: () => { syncDirtyCells(); this.apply(view, addColumn(table, c)); } },
+				{ label: '+ Insert row above', action: () => { syncDirtyCells(); this.apply(view, addRow(table, r <= 0 ? -1 : r - 2), { row: Math.max(1, r), col: c }); } },
+				{ label: '+ Insert row below', action: () => { syncDirtyCells(); this.apply(view, addRow(table, r === 0 ? -1 : r - 1), { row: r + 1, col: c }); } },
+				{ label: '+ Insert column left', action: () => { syncDirtyCells(); this.apply(view, addColumn(table, c - 1), { row: r, col: c }); } },
+				{ label: '+ Insert column right', action: () => { syncDirtyCells(); this.apply(view, addColumn(table, c), { row: r, col: c + 1 }); } },
 			];
-			if (r > 1) items.push({ label: '↑ Move row up', action: () => { syncDirtyCells(); this.apply(view, swapRows(table, r - 1, r - 2)); }, hlRow: r });
-			if (r > 0 && r < numBodyRows) items.push({ label: '↓ Move row down', action: () => { syncDirtyCells(); this.apply(view, swapRows(table, r - 1, r)); }, hlRow: r });
-			if (c > 0) items.push({ label: '← Move column left', action: () => { syncDirtyCells(); this.apply(view, swapColumns(table, c, c - 1)); }, hlCol: c });
-			if (c < numCols - 1) items.push({ label: '→ Move column right', action: () => { syncDirtyCells(); this.apply(view, swapColumns(table, c, c + 1)); }, hlCol: c });
+			if (r > 1) items.push({ label: '↑ Move row up', action: () => { syncDirtyCells(); this.apply(view, swapRows(table, r - 1, r - 2), { row: r - 1, col: c }); }, hlRow: r });
+			if (r > 0 && r < numBodyRows) items.push({ label: '↓ Move row down', action: () => { syncDirtyCells(); this.apply(view, swapRows(table, r - 1, r), { row: r + 1, col: c }); }, hlRow: r });
+			if (c > 0) items.push({ label: '← Move column left', action: () => { syncDirtyCells(); this.apply(view, swapColumns(table, c, c - 1), { row: r, col: c - 1 }); }, hlCol: c });
+			if (c < numCols - 1) items.push({ label: '→ Move column right', action: () => { syncDirtyCells(); this.apply(view, swapColumns(table, c, c + 1), { row: r, col: c + 1 }); }, hlCol: c });
 			// Delete row: only for body rows (header row cannot be removed)
 			if (r > 0) {
 				items.push({
 					label: '✕ Delete row',
 					action: () => {
 						syncDirtyCells();
-						this.apply(view, deleteRow(table, r - 1));
+						this.apply(view, deleteRow(table, r - 1), { row: Math.min(r, numBodyRows - 1), col: c });
 					},
 					hlRow: r,
 				});
@@ -448,9 +655,9 @@ class TableWidget extends WidgetType {
 				action: () => {
 					syncDirtyCells();
 					if (numCols <= 1) {
-						view.dispatch({ changes: { from: this.from, to: this.to, insert: '' } });
+						controller?.deleteTable(this.descriptor);
 					} else {
-						this.apply(view, deleteColumn(table, c));
+						this.apply(view, deleteColumn(table, c), { row: r, col: Math.min(c, numCols - 2) });
 					}
 				},
 				hlCol: c,
@@ -519,6 +726,9 @@ class TableWidget extends WidgetType {
 				};
 				doc.addEventListener('mouseup', onUp);
 			}
+		});
+		container.addEventListener('scroll', () => {
+			this.descriptor.scrollLeft = container.scrollLeft;
 		});
 
 		return container;
@@ -659,39 +869,12 @@ const tableTheme = EditorView.theme({
 // ===================== EXTENSION =====================
 const renderTables = [
 	tableTheme,
+	tableDescriptorField,
+	tableEditingPlugin,
 	EditorView.domEventHandlers({
 		mousedown: (event) => {
 			if ((event.target as Element).closest(`.${W}`)) return true;
 			return false;
-		},
-	}),
-	makeBlockReplaceExtension({
-		hideWhenContainsSelection: false,
-		createDecoration: (node: SyntaxNodeRef, state: EditorState) => {
-			if (node.name !== 'TableHeader') return null;
-			const startLine = state.doc.lineAt(node.from);
-			let endLine = startLine;
-			for (let n = startLine.number + 1; n <= state.doc.lines; n++) {
-				const l = state.doc.line(n);
-				if (l.text.trim().startsWith('|') || l.text.includes('|')) {
-					endLine = l;
-				} else { break; }
-			}
-			const text = state.doc.sliceString(startLine.from, endLine.to);
-			if (!parseTable(text)) return null;
-			return new TableWidget(text, startLine.from, endLine.to);
-		},
-		getDecorationRange: (node: SyntaxNodeRef, state: EditorState) => {
-			if (node.name !== 'TableHeader') return null;
-			const startLine = state.doc.lineAt(node.from);
-			let endLine = startLine;
-			for (let n = startLine.number + 1; n <= state.doc.lines; n++) {
-				const l = state.doc.line(n);
-				if (l.text.trim().startsWith('|') || l.text.includes('|')) {
-					endLine = l;
-				} else { break; }
-			}
-			return [startLine.from, endLine.to];
 		},
 	}),
 ];
