@@ -31,6 +31,11 @@ const waitForTimers = async () => {
 	await Promise.resolve();
 };
 
+const waitForAnimationFrame = async () => {
+	await new Promise(resolve => requestAnimationFrame(resolve));
+	await Promise.resolve();
+};
+
 const replaceCellDraft = (cellMount: HTMLElement, text: string) => {
 	cellMount.parentElement!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
 	const childEditor = testing__getNestedCellEditorView(cellMount);
@@ -152,5 +157,53 @@ describe('renderTables', () => {
 		expect(mouseDown.defaultPrevented).toBe(true);
 		expect(testing__getNestedCellEditorView(cell!)).toBe(childEditor);
 		expect(cell!.querySelector('.cm-editor')).not.toBeNull();
+	});
+
+	test('restores child editor selection after structural remounts remap the active cell', async () => {
+		const editor = await createEditor();
+		const cell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(cell).not.toBeNull();
+
+		const childEditor = replaceCellDraft(cell!, '123');
+		childEditor.dispatch({ selection: { anchor: 2, head: 2 } });
+
+		const addColumnButton = editor.dom.querySelector<HTMLElement>('th .cm-tw-ac');
+		expect(addColumnButton).not.toBeNull();
+		addColumnButton!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, cancelable: true }));
+		await waitForAnimationFrame();
+
+		const remountedCell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(remountedCell).not.toBeNull();
+		const remountedEditor = testing__getNestedCellEditorView(remountedCell!);
+		expect(remountedEditor).not.toBeNull();
+		expect(remountedEditor!.state.selection.main.anchor).toBe(2);
+		expect(remountedEditor!.state.selection.main.head).toBe(2);
+	});
+
+	test('restores child editor selection after external table rewrites rebuild the widget', async () => {
+		const editor = await createEditor();
+		const cell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(cell).not.toBeNull();
+
+		const childEditor = replaceCellDraft(cell!, '1');
+		childEditor.dispatch({ selection: { anchor: 1, head: 1 } });
+
+		const rewrittenTable = [
+			'| A | B |',
+			'| - | - |',
+			'| 1234 | 2 |',
+		].join('\n');
+		editor.dispatch({
+			changes: { from: 0, to: editor.state.doc.length, insert: rewrittenTable },
+		});
+		await waitForAnimationFrame();
+
+		const remountedCell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(remountedCell).not.toBeNull();
+		const remountedEditor = testing__getNestedCellEditorView(remountedCell!);
+		expect(remountedEditor).not.toBeNull();
+		expect(remountedEditor!.state.doc.toString()).toBe('1234');
+		expect(remountedEditor!.state.selection.main.anchor).toBe(1);
+		expect(remountedEditor!.state.selection.main.head).toBe(1);
 	});
 });

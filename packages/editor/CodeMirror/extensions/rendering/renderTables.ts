@@ -56,10 +56,11 @@ type ActiveCellEditorBridge = {
 type ActiveCellEditorSurface = {
 	mount: ()=> void;
 	unmount: ()=> void;
-	focusEditor: ()=> void;
+	focusEditor: (selection?: CellSelection | null)=> void;
 	blurEditor: ()=> void;
 	getDraftText: ()=> string;
 	getSelection: ()=> CellSelection | null;
+	setSelection: (selection: CellSelection)=> void;
 	setDraftText: (draftText: string)=> void;
 	updateEditorSettings: (settings: EditorSettings | null)=> void;
 	dispose: ()=> void;
@@ -253,6 +254,11 @@ const selectionWithinDescriptor = (state: EditorState, descriptor: TableDescript
 	return state.selection.ranges.every(range => range.from >= descriptor.from && range.to <= descriptor.to);
 };
 
+const clampSelection = (selection: CellSelection, documentLength: number): CellSelection => ({
+	anchor: Math.max(0, Math.min(selection.anchor, documentLength)),
+	head: Math.max(0, Math.min(selection.head, documentLength)),
+});
+
 const findTableSpans = (state: EditorState) => {
 	const spans: { from: number; to: number; text: string; table: Table }[] = [];
 	const seen = new Set<number>();
@@ -339,6 +345,9 @@ const reconcileTableDescriptors = (
 			descriptor.lastDispatchedText = span.text;
 			descriptor.contentVersion++;
 			descriptor.renderVersion++;
+			if (descriptor.activeCell) {
+				descriptor.pendingFocus = descriptor.activeCell;
+			}
 		}
 
 		descriptors.push(descriptor);
@@ -460,6 +469,7 @@ class TableEditingController {
 		descriptor.contentVersion++;
 		descriptor.renderVersion++;
 		descriptor.pendingFocus = pendingFocus;
+		descriptor.activeCell = pendingFocus;
 		this.markDirty(descriptor);
 		this.flushDescriptor(descriptor);
 	}
@@ -513,7 +523,7 @@ class TableEditingController {
 				if (descriptor.scrollLeft > 0) container.scrollLeft = descriptor.scrollLeft;
 				const session = this.sessionsByDescriptorId.get(descriptor.id);
 				if (session) {
-					session.focusCell(coord.row, coord.col);
+					session.focusCell(coord.row, coord.col, descriptor.activeSelection);
 				} else {
 					const target = container.querySelector<HTMLElement>(`.cm-tw-text[data-row="${coord.row}"][data-col="${coord.col}"]`);
 					if (target) focus('TableWidget', target);
@@ -572,8 +582,9 @@ class CodeMirrorActiveCellEditor implements ActiveCellEditorSurface {
 		this.cell.textElement.textContent = this.draftText;
 	}
 
-	public focusEditor() {
+	public focusEditor(selection: CellSelection | null = null) {
 		this.mount();
+		if (selection) this.setSelection(selection);
 		if (this.editor) focus('TableWidget', this.editor.contentDOM);
 	}
 
@@ -588,6 +599,12 @@ class CodeMirrorActiveCellEditor implements ActiveCellEditorSurface {
 
 	public getSelection() {
 		return this.editor ? selectionFromEditorState(this.editor.state) : null;
+	}
+
+	public setSelection(selection: CellSelection) {
+		if (!this.editor) return;
+		const clampedSelection = clampSelection(selection, this.editor.state.doc.length);
+		this.editor.dispatch({ selection: clampedSelection });
 	}
 
 	public setDraftText(draftText: string) {
@@ -744,8 +761,8 @@ class TableWidgetSession {
 		return this.allCells.flat().filter((cell): cell is CellView => !!cell);
 	}
 
-	public focusCell(row: number, col: number) {
-		this.getCell(row, col)?.editorSurface.focusEditor();
+	public focusCell(row: number, col: number, selection: CellSelection | null = null) {
+		this.getCell(row, col)?.editorSurface.focusEditor(selection);
 	}
 
 	public handleCellFocus(cell: CellView) {
@@ -779,6 +796,7 @@ class TableWidgetSession {
 			this.commitCellDraft(cell);
 			if (this.scrollbarDragging || this.container.contains(this.doc.activeElement)) return;
 			cell.editorSurface.unmount();
+			this.descriptor.activeCell = null;
 			this.syncDirtyCells();
 			this.controller?.flushDescriptor(this.descriptor);
 		}, 80));
@@ -940,6 +958,60 @@ class TableWidget extends WidgetType {
 		view.plugin(tableEditingPlugin)?.mutateTable(this.descriptor, newTable, pendingFocus);
 	}
 
+	private focusAfterInsertedRow(insertedRow: number, fallback: CellCoord) {
+		const active = this.descriptor.activeCell;
+		if (!active) return fallback;
+		return {
+			row: active.row >= insertedRow ? active.row + 1 : active.row,
+			col: active.col,
+		};
+	}
+
+	private focusAfterInsertedColumn(insertedCol: number, fallback: CellCoord) {
+		const active = this.descriptor.activeCell;
+		if (!active) return fallback;
+		return {
+			row: active.row,
+			col: active.col >= insertedCol ? active.col + 1 : active.col,
+		};
+	}
+
+	private focusAfterDeletedRow(deletedRow: number, fallback: CellCoord) {
+		const active = this.descriptor.activeCell;
+		if (!active) return fallback;
+		if (active.row === deletedRow) return fallback;
+		return {
+			row: active.row > deletedRow ? active.row - 1 : active.row,
+			col: active.col,
+		};
+	}
+
+	private focusAfterDeletedColumn(deletedCol: number, fallback: CellCoord) {
+		const active = this.descriptor.activeCell;
+		if (!active) return fallback;
+		if (active.col === deletedCol) return fallback;
+		return {
+			row: active.row,
+			col: active.col > deletedCol ? active.col - 1 : active.col,
+		};
+	}
+
+	private focusAfterSwappedRows(rowA: number, rowB: number, fallback: CellCoord) {
+		const active = this.descriptor.activeCell;
+		if (!active) return fallback;
+		if (active.row === rowA) return { row: rowB, col: active.col };
+		if (active.row === rowB) return { row: rowA, col: active.col };
+		return active;
+	}
+
+	private focusAfterSwappedColumns(colA: number, colB: number, fallback: CellCoord) {
+		const active = this.descriptor.activeCell;
+		if (!active) return fallback;
+		if (active.col === colA) return { row: active.row, col: colB };
+		if (active.col === colB) return { row: active.row, col: colA };
+		return active;
+	}
+
 	private cacheKeyFor(descriptor: TableDescriptor, table: Table) {
 		const structureVersion = table === descriptor.table ? descriptor.structureVersion : descriptor.structureVersion + 1;
 		const contentVersion = table === descriptor.table ? descriptor.contentVersion : descriptor.contentVersion + 1;
@@ -1019,7 +1091,8 @@ class TableWidget extends WidgetType {
 				e.preventDefault();
 				e.stopPropagation();
 				syncDirtyCells();
-				this.apply(view, addColumn(table, afterCol), { row: 0, col: afterCol + 1 });
+				const insertedCol = afterCol + 1;
+				this.apply(view, addColumn(table, afterCol), this.focusAfterInsertedColumn(insertedCol, { row: 0, col: insertedCol }));
 			};
 			wrapper.appendChild(btn);
 			anchorCell.appendChild(wrapper);
@@ -1039,7 +1112,8 @@ class TableWidget extends WidgetType {
 				e.preventDefault();
 				e.stopPropagation();
 				syncDirtyCells();
-				this.apply(view, addRow(table, afterBodyIdx), { row: afterBodyIdx + 2, col: 0 });
+				const insertedRow = afterBodyIdx + 2;
+				this.apply(view, addRow(table, afterBodyIdx), this.focusAfterInsertedRow(insertedRow, { row: insertedRow, col: 0 }));
 			};
 			wrapper.appendChild(btn);
 			anchorCell.appendChild(wrapper);
@@ -1114,22 +1188,57 @@ class TableWidget extends WidgetType {
 
 			type MenuItem = { label: string; action: ()=> void; hlRow?: number; hlCol?: number };
 			const items: MenuItem[] = [
-				{ label: '+ Insert row above', action: () => { syncDirtyCells(); this.apply(view, addRow(table, r <= 0 ? -1 : r - 2), { row: Math.max(1, r), col: c }); } },
-				{ label: '+ Insert row below', action: () => { syncDirtyCells(); this.apply(view, addRow(table, r === 0 ? -1 : r - 1), { row: r + 1, col: c }); } },
-				{ label: '+ Insert column left', action: () => { syncDirtyCells(); this.apply(view, addColumn(table, c - 1), { row: r, col: c }); } },
-				{ label: '+ Insert column right', action: () => { syncDirtyCells(); this.apply(view, addColumn(table, c), { row: r, col: c + 1 }); } },
+				{ label: '+ Insert row above', action: () => {
+					syncDirtyCells();
+					const insertedRow = Math.max(1, r);
+					this.apply(view, addRow(table, r <= 0 ? -1 : r - 2), this.focusAfterInsertedRow(insertedRow, { row: insertedRow, col: c }));
+				} },
+				{ label: '+ Insert row below', action: () => {
+					syncDirtyCells();
+					const insertedRow = r + 1;
+					this.apply(view, addRow(table, r === 0 ? -1 : r - 1), this.focusAfterInsertedRow(insertedRow, { row: insertedRow, col: c }));
+				} },
+				{ label: '+ Insert column left', action: () => {
+					syncDirtyCells();
+					this.apply(view, addColumn(table, c - 1), this.focusAfterInsertedColumn(c, { row: r, col: c }));
+				} },
+				{ label: '+ Insert column right', action: () => {
+					syncDirtyCells();
+					const insertedCol = c + 1;
+					this.apply(view, addColumn(table, c), this.focusAfterInsertedColumn(insertedCol, { row: r, col: insertedCol }));
+				} },
 			];
-			if (r > 1) items.push({ label: '↑ Move row up', action: () => { syncDirtyCells(); this.apply(view, swapRows(table, r - 1, r - 2), { row: r - 1, col: c }); }, hlRow: r });
-			if (r > 0 && r < numBodyRows) items.push({ label: '↓ Move row down', action: () => { syncDirtyCells(); this.apply(view, swapRows(table, r - 1, r), { row: r + 1, col: c }); }, hlRow: r });
-			if (c > 0) items.push({ label: '← Move column left', action: () => { syncDirtyCells(); this.apply(view, swapColumns(table, c, c - 1), { row: r, col: c - 1 }); }, hlCol: c });
-			if (c < numCols - 1) items.push({ label: '→ Move column right', action: () => { syncDirtyCells(); this.apply(view, swapColumns(table, c, c + 1), { row: r, col: c + 1 }); }, hlCol: c });
+			if (r > 1) {
+				items.push({ label: '↑ Move row up', action: () => {
+					syncDirtyCells();
+					this.apply(view, swapRows(table, r - 1, r - 2), this.focusAfterSwappedRows(r, r - 1, { row: r - 1, col: c }));
+				}, hlRow: r });
+			}
+			if (r > 0 && r < numBodyRows) {
+				items.push({ label: '↓ Move row down', action: () => {
+					syncDirtyCells();
+					this.apply(view, swapRows(table, r - 1, r), this.focusAfterSwappedRows(r, r + 1, { row: r + 1, col: c }));
+				}, hlRow: r });
+			}
+			if (c > 0) {
+				items.push({ label: '← Move column left', action: () => {
+					syncDirtyCells();
+					this.apply(view, swapColumns(table, c, c - 1), this.focusAfterSwappedColumns(c, c - 1, { row: r, col: c - 1 }));
+				}, hlCol: c });
+			}
+			if (c < numCols - 1) {
+				items.push({ label: '→ Move column right', action: () => {
+					syncDirtyCells();
+					this.apply(view, swapColumns(table, c, c + 1), this.focusAfterSwappedColumns(c, c + 1, { row: r, col: c + 1 }));
+				}, hlCol: c });
+			}
 			// Delete row: only for body rows (header row cannot be removed)
 			if (r > 0) {
 				items.push({
 					label: '✕ Delete row',
 					action: () => {
 						syncDirtyCells();
-						this.apply(view, deleteRow(table, r - 1), { row: Math.min(r, numBodyRows - 1), col: c });
+						this.apply(view, deleteRow(table, r - 1), this.focusAfterDeletedRow(r, { row: Math.min(r, numBodyRows - 1), col: c }));
 					},
 					hlRow: r,
 				});
@@ -1142,7 +1251,7 @@ class TableWidget extends WidgetType {
 					if (numCols <= 1) {
 						controller?.deleteTable(this.descriptor);
 					} else {
-						this.apply(view, deleteColumn(table, c), { row: r, col: Math.min(c, numCols - 2) });
+						this.apply(view, deleteColumn(table, c), this.focusAfterDeletedColumn(c, { row: r, col: Math.min(c, numCols - 2) }));
 					}
 				},
 				hlCol: c,
