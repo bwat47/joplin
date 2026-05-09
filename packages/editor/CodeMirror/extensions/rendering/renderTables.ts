@@ -249,6 +249,10 @@ const tableTextWithFollowingSeparator = (view: EditorView, descriptor: TableDesc
 	return needsBlankLine ? `${tableText}\n` : tableText;
 };
 
+const selectionWithinDescriptor = (state: EditorState, descriptor: TableDescriptor) => {
+	return state.selection.ranges.every(range => range.from >= descriptor.from && range.to <= descriptor.to);
+};
+
 const findTableSpans = (state: EditorState) => {
 	const spans: { from: number; to: number; text: string; table: Table }[] = [];
 	const seen = new Set<number>();
@@ -475,14 +479,16 @@ class TableEditingController {
 
 		descriptor.dispatchScheduled = false;
 		descriptor.lastDispatchedText = tableText;
-		descriptor.pendingFocus ??= descriptor.activeCell;
+		const keepTableFocus = selectionWithinDescriptor(this.view.state, descriptor);
+		if (keepTableFocus) descriptor.pendingFocus ??= descriptor.activeCell;
+
 		this.view.dispatch({
 			changes: {
 				from: descriptor.from,
 				to: descriptor.to,
 				insert: tableTextWithFollowingSeparator(this.view, descriptor, tableText),
 			},
-			selection: { anchor: descriptor.from, head: descriptor.from },
+			...(keepTableFocus ? { selection: { anchor: descriptor.from, head: descriptor.from } } : {}),
 			annotations: tableEditAnnotation.of({ descriptorId: descriptor.id }),
 		});
 	}

@@ -88,6 +88,21 @@ describe('renderTables', () => {
 		expect(editor.state.doc.toString()).toContain('edited\\|cell');
 	});
 
+	test('does not pull selection back into the table after the user moves elsewhere', async () => {
+		const editor = await createEditor(`Intro\n\n${tableMarkdown}`);
+		const cell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(cell).not.toBeNull();
+
+		const childEditor = replaceCellDraft(cell!, 'edited elsewhere');
+		editor.dispatch({ selection: EditorSelection.cursor(0) });
+		blur('renderTables.test', childEditor.contentDOM);
+		await waitForTimers();
+
+		expect(editor.state.doc.toString()).toContain('edited elsewhere');
+		expect(editor.state.selection.main.anchor).toBe(0);
+		expect(editor.state.selection.main.head).toBe(0);
+	});
+
 	test('table-owned edits update the parent document without remounting the table widget', async () => {
 		const tableEditTransactions: boolean[] = [];
 		const editor = await createTestEditor(
