@@ -5,10 +5,20 @@
 // - Enter in last cell → adds new row
 // - Tab/Shift+Tab → navigate cells
 
-import { EditorView, WidgetType, Decoration, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import { Annotation, EditorState, Range, StateField, Transaction } from '@codemirror/state';
-import { syntaxTree } from '@codemirror/language';
+import { EditorView, WidgetType, Decoration, ViewPlugin, ViewUpdate, drawSelection, keymap } from '@codemirror/view';
+import { Annotation, Compartment, EditorState, Extension, Range, StateField, Transaction } from '@codemirror/state';
+import { indentUnit, syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { markdown } from '@codemirror/lang-markdown';
+import { html } from '@codemirror/lang-html';
+import { defaultKeymap } from '@codemirror/commands';
+import { classHighlighter } from '@lezer/highlight';
+import { GFM as GitHubFlavoredMarkdownExtension } from '@lezer/markdown';
 import { focus, blur } from '@joplin/lib/utils/focusHandler';
+import markdownMathExtension from '../markdownMathExtension';
+import markdownHighlightExtension, { markdownInsertExtension } from '../markdownHighlightExtension';
+import { editorSettingsFacet } from '../editorSettingsExtension';
+import decoratorExtension from '../markdownDecorationExtension';
+import lookUpLanguage from '../../utils/markdown/codeBlockLanguages/lookUpLanguage';
 import {
 	parseTable, serializeTable,
 	addRow, addColumn, deleteRow, deleteColumn,
@@ -16,6 +26,8 @@ import {
 	Table,
 } from '../../utils/markdown/tableUtils';
 import { getCellContentPosition } from '../../editorCommands/tableCommands';
+import createTheme from '../../theme';
+import { EditorSettings } from '../../../types';
 
 // Short class name prefix
 const W = 'cm-tw';
@@ -26,9 +38,32 @@ const CTX = 'cm-tw-ctx';
 // Cache for rendered table widget heights so CodeMirror can estimate
 // heights correctly for scroll position and coordinate mapping.
 const tableHeightCache = new Map<string, number>();
+const tableSessionByContainer = new WeakMap<HTMLElement, TableWidgetSession>();
+const testingNestedEditorByMount = new WeakMap<HTMLElement, EditorView>();
 
 type CellCoord = { row: number; col: number };
 type CellSelection = { anchor: number; head: number };
+type ContextMenuHandler = (event: MouseEvent, coord: CellCoord)=> void;
+
+type ActiveCellEditorBridge = {
+	onDraftChanged: (cell: CellView, draftText: string)=> void;
+	onSelectionChanged: (cell: CellView, selection: CellSelection)=> void;
+	onCommitRequested: (cell: CellView)=> void;
+	onFocus: (cell: CellView)=> void;
+	onGeometryChanged: (cell: CellView)=> void;
+};
+
+type ActiveCellEditorSurface = {
+	mount: ()=> void;
+	unmount: ()=> void;
+	focusEditor: ()=> void;
+	blurEditor: ()=> void;
+	getDraftText: ()=> string;
+	getSelection: ()=> CellSelection | null;
+	setDraftText: (draftText: string)=> void;
+	updateEditorSettings: (settings: EditorSettings | null)=> void;
+	dispose: ()=> void;
+};
 
 export interface TableDescriptor {
 	id: string;
@@ -52,13 +87,133 @@ export const tableEditAnnotation = Annotation.define<{ descriptorId: string }>()
 
 export const cellTextCodec = {
 	toDraft: (tableCellContent: string): string => {
-		return tableCellContent.replace(/<br>/gi, '\n').replace(/\\\|/g, '|');
+		return tableCellContent.replace(/<br\s*\/?>/gi, '\n').replace(/\\\|/g, '|');
 	},
 
 	toTableCellContent: (draft: string): string => {
 		return draft.replace(/\n/g, '<br>').replace(/\|/g, '\\|');
 	},
 };
+
+const eventTargetElement = (target: EventTarget | null): Element | null => {
+	if (!target) return null;
+	const maybeElement = target as Element;
+	if (typeof maybeElement.closest === 'function') return maybeElement;
+	return (target as Node & { parentElement?: Element | null }).parentElement ?? null;
+};
+
+const selectionFromEditorState = (state: EditorState): CellSelection => ({
+	anchor: state.selection.main.anchor,
+	head: state.selection.main.head,
+});
+
+const nestedCellEditorLayoutTheme = EditorView.theme({
+	'&.cm-editor': {
+		background: 'transparent',
+		height: '100%',
+		minHeight: '1.2em',
+		outline: 'none',
+	},
+	'&.cm-focused': {
+		outline: 'none',
+	},
+	'& .cm-scroller': {
+		fontFamily: 'inherit',
+		lineHeight: 'inherit',
+		overflow: 'visible',
+	},
+	'&.cm-editor .cm-content': {
+		boxSizing: 'border-box',
+		lineHeight: 'inherit',
+		marginLeft: '0',
+		marginRight: '0',
+		maxWidth: 'none',
+		minHeight: '1.2em',
+		padding: '0',
+		paddingBottom: '0',
+		whiteSpace: 'pre-wrap',
+	},
+	'& .cm-line': {
+		padding: '0',
+	},
+});
+
+const createNestedCellEditorLanguageExtension = (settings: EditorSettings | null): Extension => {
+	const markdownMarkEnabled = settings?.markdownMarkEnabled ?? true;
+	const markdownInsertEnabled = settings?.markdownInsertEnabled ?? true;
+	const katexEnabled = settings?.katexEnabled ?? true;
+	const autocompleteMarkup = settings?.autocompleteMarkup ?? true;
+
+	return markdown({
+		extensions: [
+			GitHubFlavoredMarkdownExtension,
+			markdownMarkEnabled ? markdownHighlightExtension : [],
+			markdownInsertEnabled ? markdownInsertExtension : [],
+			katexEnabled ? markdownMathExtension : [],
+		],
+		codeLanguages: lookUpLanguage,
+		addKeymap: false,
+		...(autocompleteMarkup ? {} : {
+			completeHTMLTags: false,
+			htmlTagLanguage: html({ matchClosingTags: false, autoCloseTags: false }),
+		}),
+	});
+};
+
+const createNestedCellEditorSettingsExtensions = (settings: EditorSettings | null): Extension[] => [
+	createNestedCellEditorLanguageExtension(settings),
+	settings ? createTheme(settings.themeData) : [],
+	indentUnit.of(settings?.indentWithTabs ? '\t' : '    '),
+	EditorView.contentAttributes.of({
+		autocapitalize: 'sentence',
+		autocorrect: settings?.spellcheckEnabled ? 'true' : 'false',
+		spellcheck: settings?.spellcheckEnabled ? 'true' : 'false',
+		'aria-label': settings?.editorLabel ?? 'Table cell editor',
+	}),
+	nestedCellEditorLayoutTheme,
+];
+
+const createNestedCellEditorExtensions = (
+	cell: CellView,
+	bridge: ActiveCellEditorBridge,
+	editorSettings: Compartment,
+	settings: EditorSettings | null,
+): Extension[] => [
+	editorSettings.of(createNestedCellEditorSettingsExtensions(settings)),
+	drawSelection(),
+	decoratorExtension,
+	syntaxHighlighting(classHighlighter),
+	EditorView.lineWrapping,
+	EditorView.domEventHandlers({
+		focus: () => {
+			bridge.onFocus(cell);
+			return false;
+		},
+		blur: () => {
+			bridge.onCommitRequested(cell);
+			return false;
+		},
+		keydown: (event, childView) => {
+			if (event.key === 'Enter' && event.shiftKey) {
+				event.preventDefault();
+				childView.dispatch(childView.state.replaceSelection('\n'));
+				return true;
+			}
+			cell.handleKeyDown(event);
+			return event.defaultPrevented;
+		},
+	}),
+	keymap.of(defaultKeymap),
+	EditorView.updateListener.of((update: ViewUpdate) => {
+		if (update.docChanged) {
+			bridge.onDraftChanged(cell, update.state.doc.toString());
+			bridge.onGeometryChanged(cell);
+		}
+		if (update.selectionSet || update.docChanged) {
+			bridge.onSelectionChanged(cell, selectionFromEditorState(update.state));
+		}
+	}),
+];
 
 let nextTableDescriptorId = 1;
 
@@ -191,6 +346,10 @@ export const testing__resetTableDescriptorIds = () => {
 	nextTableDescriptorId = 1;
 };
 
+export const testing__getNestedCellEditorView = (mount: HTMLElement) => {
+	return testingNestedEditorByMount.get(mount) ?? null;
+};
+
 export const tableDescriptorField = StateField.define<readonly TableDescriptor[]>({
 	create: state => reconcileTableDescriptors(state, []),
 	update: (descriptors, transaction) => {
@@ -205,9 +364,21 @@ export const tableDescriptorField = StateField.define<readonly TableDescriptor[]
 });
 
 class TableEditingController {
+	private sessionsByDescriptorId = new Map<string, TableWidgetSession>();
+	private editorSettings: EditorSettings | null = null;
+
 	public constructor(private view: EditorView) {}
 
 	public update(update: ViewUpdate) {
+		const previousSettings = update.startState.facet(editorSettingsFacet);
+		const currentSettings = update.state.facet(editorSettingsFacet);
+		if (previousSettings !== currentSettings) {
+			this.editorSettings = currentSettings;
+			for (const session of this.sessionsByDescriptorId.values()) {
+				session.updateEditorSettings(currentSettings);
+			}
+		}
+
 		if (update.docChanged || update.viewportChanged) {
 			this.restorePendingFocus();
 		}
@@ -216,6 +387,25 @@ class TableEditingController {
 	public destroy() {
 		for (const descriptor of this.view.state.field(tableDescriptorField, false) ?? []) {
 			this.flushDescriptor(descriptor);
+		}
+		for (const session of this.sessionsByDescriptorId.values()) {
+			session.dispose();
+		}
+		this.sessionsByDescriptorId.clear();
+	}
+
+	public getEditorSettings() {
+		this.editorSettings ??= this.view.state.facet(editorSettingsFacet);
+		return this.editorSettings;
+	}
+
+	public registerSession(descriptor: TableDescriptor, session: TableWidgetSession) {
+		this.sessionsByDescriptorId.set(descriptor.id, session);
+	}
+
+	public unregisterSession(descriptor: TableDescriptor, session: TableWidgetSession) {
+		if (this.sessionsByDescriptorId.get(descriptor.id) === session) {
+			this.sessionsByDescriptorId.delete(descriptor.id);
 		}
 	}
 
@@ -226,6 +416,11 @@ class TableEditingController {
 		if (cellPos !== null) {
 			this.view.dispatch({ selection: { anchor: cellPos, head: cellPos } });
 		}
+	}
+
+	public updateCellSelection(descriptor: TableDescriptor, coord: CellCoord, selection: CellSelection) {
+		descriptor.activeCell = coord;
+		descriptor.activeSelection = selection;
 	}
 
 	public updateCell(descriptor: TableDescriptor, coord: CellCoord, draftText: string) {
@@ -240,6 +435,12 @@ class TableEditingController {
 	}
 
 	public updateAllCellsFromDOM(descriptor: TableDescriptor, container: HTMLElement) {
+		const session = this.sessionsByDescriptorId.get(descriptor.id);
+		if (session) {
+			session.syncDirtyCells();
+			return;
+		}
+
 		for (const textDiv of Array.from(container.querySelectorAll<HTMLElement>('.cm-tw-text'))) {
 			const row = Number(textDiv.dataset.row);
 			const col = Number(textDiv.dataset.col);
@@ -304,8 +505,13 @@ class TableEditingController {
 				const container = this.findContainer(descriptor);
 				if (!container) return;
 				if (descriptor.scrollLeft > 0) container.scrollLeft = descriptor.scrollLeft;
-				const target = container.querySelector<HTMLElement>(`.cm-tw-text[data-row="${coord.row}"][data-col="${coord.col}"]`);
-				if (target) focus('TableWidget', target);
+				const session = this.sessionsByDescriptorId.get(descriptor.id);
+				if (session) {
+					session.focusCell(coord.row, coord.col);
+				} else {
+					const target = container.querySelector<HTMLElement>(`.cm-tw-text[data-row="${coord.row}"][data-col="${coord.col}"]`);
+					if (target) focus('TableWidget', target);
+				}
 			});
 		}
 	}
@@ -316,6 +522,357 @@ class TableEditingController {
 }
 
 const tableEditingPlugin = ViewPlugin.fromClass(TableEditingController);
+
+class CodeMirrorActiveCellEditor implements ActiveCellEditorSurface {
+	private mounted = false;
+	private editor: EditorView | null = null;
+	private readonly editorSettingsCompartment = new Compartment();
+	private draftText: string;
+
+	public constructor(
+		private cell: CellView,
+		initialDraftText: string,
+		private bridge: ActiveCellEditorBridge,
+		private editorSettings: EditorSettings | null,
+	) {
+		this.draftText = initialDraftText;
+		this.cell.textElement.textContent = initialDraftText;
+	}
+
+	public mount() {
+		if (this.mounted) return;
+		this.mounted = true;
+
+		if (!this.editor) {
+			this.cell.textElement.textContent = '';
+			this.editor = new EditorView({
+				state: EditorState.create({
+					doc: this.draftText,
+					extensions: createNestedCellEditorExtensions(this.cell, this.bridge, this.editorSettingsCompartment, this.editorSettings),
+				}),
+				parent: this.cell.textElement,
+			});
+			testingNestedEditorByMount.set(this.cell.textElement, this.editor);
+		}
+	}
+
+	public unmount() {
+		if (!this.mounted) return;
+		this.mounted = false;
+		this.draftText = this.getDraftText();
+		this.editor?.destroy();
+		this.editor = null;
+		testingNestedEditorByMount.delete(this.cell.textElement);
+		this.cell.textElement.textContent = this.draftText;
+	}
+
+	public focusEditor() {
+		this.mount();
+		if (this.editor) focus('TableWidget', this.editor.contentDOM);
+	}
+
+	public blurEditor() {
+		if (this.editor) blur('TableWidget', this.editor.contentDOM);
+	}
+
+	public getDraftText() {
+		this.draftText = this.editor?.state.doc.toString() ?? this.draftText;
+		return this.draftText;
+	}
+
+	public getSelection() {
+		return this.editor ? selectionFromEditorState(this.editor.state) : null;
+	}
+
+	public setDraftText(draftText: string) {
+		this.draftText = draftText;
+		if (this.editor) {
+			this.editor.dispatch({
+				changes: { from: 0, to: this.editor.state.doc.length, insert: draftText },
+			});
+		} else {
+			this.cell.textElement.textContent = draftText;
+		}
+	}
+
+	public updateEditorSettings(settings: EditorSettings | null) {
+		this.editorSettings = settings;
+		this.editor?.dispatch({
+			effects: this.editorSettingsCompartment.reconfigure(createNestedCellEditorSettingsExtensions(settings)),
+		});
+	}
+
+	public dispose() {
+		this.unmount();
+		this.editor?.destroy();
+		this.editor = null;
+		testingNestedEditorByMount.delete(this.cell.textElement);
+	}
+}
+
+class CellView {
+	public readonly cellElement: HTMLElement;
+	public readonly textElement: HTMLElement;
+	public readonly editorSurface: ActiveCellEditorSurface;
+	private blurTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	public constructor(
+		private doc: Document,
+		public readonly coordinates: CellCoord,
+		text: string,
+		isHeader: boolean,
+		private session: TableWidgetSession,
+		private showContextMenu: ContextMenuHandler,
+	) {
+		this.cellElement = this.createCellElement(isHeader);
+		this.textElement = this.createTextElement();
+		this.editorSurface = new CodeMirrorActiveCellEditor(
+			this,
+			cellTextCodec.toDraft(text),
+			{
+				onDraftChanged: (cell, draftText) => session.handleCellDraftChanged(cell, draftText),
+				onSelectionChanged: (cell, selection) => session.handleCellSelectionChanged(cell, selection),
+				onCommitRequested: cell => session.handleCellBlur(cell),
+				onFocus: cell => session.handleCellFocus(cell),
+				onGeometryChanged: cell => session.handleCellGeometryChanged(cell),
+			},
+			session.getEditorSettings(),
+		);
+		this.textElement.dataset.row = `${coordinates.row}`;
+		this.textElement.dataset.col = `${coordinates.col}`;
+		this.cellElement.appendChild(this.textElement);
+	}
+
+	public dispose() {
+		if (this.blurTimeout !== null) {
+			clearTimeout(this.blurTimeout);
+			this.blurTimeout = null;
+		}
+		this.editorSurface.dispose();
+		this.cellElement.onmousedown = null;
+		this.cellElement.oncontextmenu = null;
+	}
+
+	public handleKeyDown(event: KeyboardEvent) {
+		this.session.handleCellKeyDown(event, this);
+	}
+
+	public setBlurTimeout(timeout: ReturnType<typeof setTimeout>) {
+		this.blurTimeout = timeout;
+	}
+
+	private createCellElement(isHeader: boolean) {
+		const element = this.doc.createElement(isHeader ? 'th' : 'td');
+		element.classList.add(CELL);
+		if (isHeader) element.classList.add(HDR);
+		element.onmousedown = event => {
+			if (event.button !== 0) return;
+			const targetElement = eventTargetElement(event.target);
+			const targetNode = event.target as Node | null;
+			const nestedEditorElement = this.textElement.querySelector('.cm-editor');
+			if (targetNode && nestedEditorElement?.contains(targetNode)) return;
+			if (targetElement?.closest('.cm-tw-ac-wrap, .cm-tw-ar-wrap, .cm-tw-ctx')) return;
+
+			event.preventDefault();
+			this.editorSurface.focusEditor();
+		};
+		element.oncontextmenu = event => this.showContextMenu(event, this.coordinates);
+		return element;
+	}
+
+	private createTextElement() {
+		const textElement = this.doc.createElement('div');
+		textElement.classList.add('cm-tw-text');
+		return textElement;
+	}
+}
+
+class TableWidgetSession {
+	private allCells: CellView[][] = [];
+	private lastFocusedCell: CellView | null = null;
+	private skipBlurSync = false;
+	private scrollbarDragging = false;
+	private remeasurePending = false;
+	private editorSettings: EditorSettings | null;
+
+	public constructor(
+		private view: EditorView,
+		private descriptor: TableDescriptor,
+		private container: HTMLElement,
+		private tableElement: HTMLElement,
+		private doc: Document,
+		private controller: TableEditingController | null,
+		private remeasureHandler: ()=> void,
+		private applyTableChangeHandler: (newTable: Table | null, pendingFocus?: CellCoord | null)=> void,
+	) {
+		this.editorSettings = controller?.getEditorSettings() ?? view.state.facet(editorSettingsFacet);
+	}
+
+	public registerCell(cell: CellView) {
+		const { row, col } = cell.coordinates;
+		this.allCells[row] ??= [];
+		this.allCells[row][col] = cell;
+	}
+
+	public getEditorSettings() {
+		return this.editorSettings;
+	}
+
+	public updateEditorSettings(settings: EditorSettings | null) {
+		if (this.editorSettings === settings) return;
+		this.editorSettings = settings;
+		for (const cell of this.getFlatCells()) {
+			cell.editorSurface.updateEditorSettings(settings);
+		}
+	}
+
+	public getCell(row: number, col: number) {
+		return this.allCells[row]?.[col] ?? null;
+	}
+
+	public getFlatCells() {
+		return this.allCells.flat().filter((cell): cell is CellView => !!cell);
+	}
+
+	public focusCell(row: number, col: number) {
+		this.getCell(row, col)?.editorSurface.focusEditor();
+	}
+
+	public handleCellFocus(cell: CellView) {
+		this.lastFocusedCell = cell;
+		this.controller?.markCellActive(this.descriptor, cell.coordinates.row, cell.coordinates.col);
+	}
+
+	public handleCellDraftChanged(cell: CellView, draftText: string) {
+		this.controller?.updateCell(this.descriptor, cell.coordinates, draftText);
+	}
+
+	public handleCellSelectionChanged(cell: CellView, selection: CellSelection) {
+		this.controller?.updateCellSelection(this.descriptor, cell.coordinates, selection);
+	}
+
+	public handleCellGeometryChanged(_cell: CellView) {
+		if (this.remeasurePending) return;
+		this.remeasurePending = true;
+		requestAnimationFrame(() => {
+			this.remeasurePending = false;
+			if (!this.container.isConnected) return;
+			this.remeasureHandler();
+			this.view.requestMeasure();
+		});
+	}
+
+	public handleCellBlur(cell: CellView) {
+		if (this.consumeSkipBlurSync()) return;
+		cell.setBlurTimeout(setTimeout(() => {
+			if (!this.container.isConnected) return;
+			this.commitCellDraft(cell);
+			if (this.scrollbarDragging || this.container.contains(this.doc.activeElement)) return;
+			cell.editorSurface.unmount();
+			this.syncDirtyCells();
+			this.controller?.flushDescriptor(this.descriptor);
+		}, 80));
+	}
+
+	public handleCellKeyDown(event: KeyboardEvent, cell: CellView) {
+		const { row, col } = cell.coordinates;
+		if (event.key === 'Tab') {
+			event.preventDefault();
+			event.stopPropagation();
+			this.markSkipBlurSync();
+			this.syncDirtyCells();
+
+			const flat = this.getFlatCells();
+			const currentIndex = flat.indexOf(cell);
+			const nextIndex = event.shiftKey ? currentIndex - 1 : currentIndex + 1;
+
+			if (nextIndex >= 0 && nextIndex < flat.length) {
+				flat[nextIndex].editorSurface.focusEditor();
+			} else if (!event.shiftKey) {
+				const newTable = addRow(this.descriptor.table, this.descriptor.table.body.length - 1);
+				this.applyTableChangeHandler(newTable, { row: this.descriptor.table.body.length + 1, col: 0 });
+			}
+		} else if (event.key === 'Enter' && !event.shiftKey) {
+			event.preventDefault();
+			this.markSkipBlurSync();
+			this.syncDirtyCells();
+			const totalRows = this.descriptor.table.body.length + 1;
+			const numCols = this.descriptor.table.header.cells.length;
+			if (row === totalRows - 1 && col === numCols - 1) {
+				this.applyTableChangeHandler(addRow(this.descriptor.table, this.descriptor.table.body.length - 1), { row: totalRows, col: 0 });
+			} else {
+				this.controller?.flushDescriptor(this.descriptor);
+			}
+		} else if (event.key === 'Escape') {
+			event.preventDefault();
+			cell.editorSurface.blurEditor();
+		}
+	}
+
+	public handleContainerMouseDown(event: MouseEvent) {
+		if (event.target !== this.container) return;
+		event.preventDefault();
+		this.scrollbarDragging = true;
+		const onUp = () => {
+			this.scrollbarDragging = false;
+			this.doc.removeEventListener('mouseup', onUp);
+			if (this.lastFocusedCell && this.container.isConnected) {
+				this.lastFocusedCell.editorSurface.focusEditor();
+			}
+		};
+		this.doc.addEventListener('mouseup', onUp);
+	}
+
+	public syncDirtyCells() {
+		for (const cell of this.getFlatCells()) {
+			this.commitCellDraft(cell);
+		}
+	}
+
+	public highlightRow(rowIdx: number) {
+		if (rowIdx >= 0 && rowIdx < this.allCells.length) {
+			for (const cell of this.allCells[rowIdx]) {
+				cell?.cellElement.classList.add('cm-tw-hl');
+			}
+		}
+	}
+
+	public highlightCol(colIdx: number) {
+		for (const row of this.allCells) {
+			if (colIdx >= 0 && colIdx < row.length) {
+				row[colIdx]?.cellElement.classList.add('cm-tw-hl');
+			}
+		}
+	}
+
+	public clearHighlight() {
+		for (const element of this.tableElement.querySelectorAll('.cm-tw-hl')) {
+			element.classList.remove('cm-tw-hl');
+		}
+	}
+
+	public dispose() {
+		for (const cell of this.getFlatCells()) {
+			cell.dispose();
+		}
+		this.allCells = [];
+		this.controller?.unregisterSession(this.descriptor, this);
+	}
+
+	private commitCellDraft(cell: CellView) {
+		this.controller?.updateCell(this.descriptor, cell.coordinates, cell.editorSurface.getDraftText());
+	}
+
+	private markSkipBlurSync() {
+		this.skipBlurSync = true;
+	}
+
+	private consumeSkipBlurSync() {
+		if (!this.skipBlurSync) return false;
+		this.skipBlurSync = false;
+		return true;
+	}
+}
 
 class TableWidget extends WidgetType {
 	public constructor(
@@ -384,7 +941,6 @@ class TableWidget extends WidgetType {
 
 		const numCols = table.header.cells.length;
 		const numBodyRows = table.body.length;
-		const totalRows = numBodyRows + 1;
 		const allCells: HTMLElement[][] = [];
 		const controller = view.plugin(tableEditingPlugin);
 
@@ -393,146 +949,35 @@ class TableWidget extends WidgetType {
 		container.dataset.tableId = this.descriptor.id;
 
 		const tableEl = doc.createElement('table');
-
-		// Flag to skip onblur sync when Tab/Enter handles it
-		let skipBlurSync = false;
-
-		// Track scrollbar interaction to prevent widget rebuild during drag
-		let scrollbarDragging = false;
-		let lastFocusedTextDiv: HTMLElement | null = null;
+		const measureRenderedHeight = () => {
+			if (container.isConnected) {
+				tableHeightCache.set(this.cacheKey_, container.offsetHeight);
+			}
+		};
+		const session = new TableWidgetSession(
+			view,
+			this.descriptor,
+			container,
+			tableEl,
+			doc,
+			controller ?? null,
+			measureRenderedHeight,
+			(newTable, pendingFocus = null) => this.apply(view, newTable, pendingFocus),
+		);
+		tableSessionByContainer.set(container, session);
+		controller?.registerSession(this.descriptor, session);
 
 		// Sync all dirty cells back to the table model (without dispatching).
 		// Must be called before any structural apply() so edits are not lost.
 		const syncDirtyCells = () => {
-			controller?.updateAllCellsFromDOM(this.descriptor, container);
+			session.syncDirtyCells();
 		};
 
 		// ---- Editable cell ----
 		const mkCell = (text: string, r: number, c: number, isHdr: boolean) => {
-			const el = doc.createElement(isHdr ? 'th' : 'td');
-			el.classList.add(CELL);
-			if (isHdr) el.classList.add(HDR);
-
-			// Editable text lives in its own div — cell itself is NOT editable
-			const textDiv = doc.createElement('div');
-			textDiv.classList.add('cm-tw-text');
-			textDiv.dataset.row = `${r}`;
-			textDiv.dataset.col = `${c}`;
-			textDiv.contentEditable = 'true';
-			textDiv.spellcheck = false;
-			textDiv.textContent = cellTextCodec.toDraft(text);
-
-			// Sync CM cursor to this cell so toolbar commands work
-			textDiv.onfocus = () => {
-				lastFocusedTextDiv = textDiv;
-				controller?.markCellActive(this.descriptor, r, c);
-			};
-
-			textDiv.oninput = () => {
-				controller?.updateCell(this.descriptor, { row: r, col: c }, textDiv.textContent || '');
-			};
-
-			textDiv.onblur = () => {
-				if (skipBlurSync) { skipBlurSync = false; return; }
-				// Defer sync so that a click on another cell in the same
-				// table can register before the widget rebuilds.
-				setTimeout(() => {
-					// If the widget was rebuilt (e.g. by a "+" button or
-					// context menu action), the old container is detached.
-					// Do nothing — the rebuild already has the latest data.
-					if (!container.isConnected) return;
-					const v = textDiv.textContent || '';
-					const orig = isHdr
-						? table.header.cells[c]?.content
-						: table.body[r - 1]?.cells[c]?.content;
-					if (cellTextCodec.toTableCellContent(v) === orig) return;
-					// If focus moved to another cell in this table, just
-					// update the in-memory model — no dispatch/rebuild.
-					// The markdown will sync on next structural edit or
-					// when focus leaves the table entirely.
-					if (scrollbarDragging || container.contains(doc.activeElement)) {
-						controller?.updateCell(this.descriptor, { row: r, col: c }, v);
-					} else {
-						// Focus left the table — sync all dirty cells to markdown
-						syncDirtyCells();
-						controller?.flushDescriptor(this.descriptor);
-					}
-				}, 80);
-			};
-
-			textDiv.onkeydown = (e) => {
-				// Block newlines — not allowed in markdown table cells
-				if (e.key === 'Enter' && e.shiftKey) {
-					e.preventDefault();
-					return;
-				}
-				if (e.key === 'Tab') {
-					e.preventDefault();
-					e.stopPropagation();
-
-					skipBlurSync = true;
-
-					// Sync all dirty cells into the table model first
-					syncDirtyCells();
-
-					// Check if any cell content actually changed
-					const newText = serializeTable(table);
-					const isDirty = newText !== this.descriptor.lastDispatchedText;
-
-					// Compute target cell index
-					const flat = allCells.flat();
-					const i = flat.indexOf(el);
-					const nextIdx = e.shiftKey ? i - 1 : i + 1;
-
-					if (nextIdx >= 0 && nextIdx < flat.length) {
-						if (isDirty) {
-							// Content changed — apply and refocus after rebuild
-							const targetCell = flat[nextIdx] as HTMLElement;
-							this.apply(view, table, {
-								row: Number(targetCell.querySelector<HTMLElement>('.cm-tw-text')?.dataset.row ?? 0),
-								col: Number(targetCell.querySelector<HTMLElement>('.cm-tw-text')?.dataset.col ?? 0),
-							});
-						} else {
-							// No changes — just move focus, no rebuild needed
-							const targetText = flat[nextIdx].querySelector('.cm-tw-text') as HTMLElement;
-							if (targetText) focus('TableWidget', targetText);
-						}
-					} else if (!e.shiftKey) {
-						// Past last cell — add new row and focus its first cell
-						const newTable = addRow(table, numBodyRows - 1);
-						this.apply(view, newTable, { row: totalRows, col: 0 });
-					}
-				} else if (e.key === 'Enter' && !e.shiftKey) {
-					e.preventDefault();
-					skipBlurSync = true;
-					syncDirtyCells();
-					if (r === totalRows - 1 && c === numCols - 1) {
-						this.apply(view, addRow(table, numBodyRows - 1), { row: totalRows, col: 0 });
-					} else {
-						// Only apply if content actually changed
-						const enterText = serializeTable(table);
-						if (enterText !== this.descriptor.lastDispatchedText) {
-							this.apply(view, table);
-						}
-					}
-				} else if (e.key === 'Escape') {
-					e.preventDefault();
-					blur('TableWidget', textDiv);
-				}
-			};
-
-			el.appendChild(textDiv);
-			// Clicking anywhere in the cell (including empty space in tall rows)
-			// should activate the text editor
-			el.onmousedown = (e) => {
-				if (e.target === el) {
-					e.preventDefault();
-					focus('TableWidget', textDiv);
-				}
-			};
-			el.oncontextmenu = (e) => showCtx(e, r, c);
-
-			return el;
+			const cell = new CellView(doc, { row: r, col: c }, text, isHdr, session, (event, coord) => showCtx(event, coord.row, coord.col));
+			session.registerCell(cell);
+			return cell.cellElement;
 		};
 
 		// ---- Hover "+" buttons (absolute positioned) ----
@@ -723,34 +1168,24 @@ class TableWidget extends WidgetType {
 		// Measure and cache the rendered height so CodeMirror can correctly
 		// calculate scroll positions and coordinate mapping.
 		requestAnimationFrame(() => {
-			if (container.isConnected) {
-				tableHeightCache.set(this.cacheKey_, container.offsetHeight);
-			}
+			measureRenderedHeight();
 		});
 
 		// Detect scrollbar/container clicks — prevent cell blur so the
 		// widget is not rebuilt mid-scroll and the cell editor stays open.
 		container.addEventListener('mousedown', (e) => {
-			if (e.target === container) {
-				e.preventDefault();
-				scrollbarDragging = true;
-				const onUp = () => {
-					scrollbarDragging = false;
-					doc.removeEventListener('mouseup', onUp);
-					// If blur fired despite preventDefault, re-focus the cell
-					if (lastFocusedTextDiv && container.isConnected &&
-						doc.activeElement !== lastFocusedTextDiv) {
-						focus('TableWidget', lastFocusedTextDiv);
-					}
-				};
-				doc.addEventListener('mouseup', onUp);
-			}
+			session.handleContainerMouseDown(e);
 		});
 		container.addEventListener('scroll', () => {
 			this.descriptor.scrollLeft = container.scrollLeft;
 		});
 
 		return container;
+	}
+
+	public destroy(dom: HTMLElement) {
+		const session = tableSessionByContainer.get(dom);
+		session?.dispose();
 	}
 
 	public ignoreEvent() { return true; }

@@ -4,9 +4,10 @@ import renderTables, {
 	cellTextCodec,
 	tableEditAnnotation,
 	tableDescriptorField,
+	testing__getNestedCellEditorView,
 	testing__resetTableDescriptorIds,
 } from './renderTables';
-import { blur, focus } from '@joplin/lib/utils/focusHandler';
+import { blur } from '@joplin/lib/utils/focusHandler';
 import { EditorView } from '@codemirror/view';
 
 const tableMarkdown = [
@@ -28,6 +29,16 @@ const createEditor = async (initialMarkdown = tableMarkdown) => {
 const waitForTimers = async () => {
 	await new Promise(resolve => setTimeout(resolve, 220));
 	await Promise.resolve();
+};
+
+const replaceCellDraft = (cellMount: HTMLElement, text: string) => {
+	cellMount.parentElement!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+	const childEditor = testing__getNestedCellEditorView(cellMount);
+	expect(childEditor).not.toBeNull();
+	childEditor!.dispatch({
+		changes: { from: 0, to: childEditor!.state.doc.length, insert: text },
+	});
+	return childEditor!;
 };
 
 describe('renderTables', () => {
@@ -68,10 +79,10 @@ describe('renderTables', () => {
 		const cell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
 		expect(cell).not.toBeNull();
 
-		focus('renderTables.test', cell!);
-		cell!.textContent = 'edited|cell';
-		cell!.dispatchEvent(new InputEvent('input', { bubbles: true }));
-		blur('renderTables.test', cell!);
+		const childEditor = replaceCellDraft(cell!, 'edited|cell');
+		expect(cell!.querySelector('.cm-editor')).not.toBeNull();
+		expect(cell!.contentEditable).not.toBe('true');
+		blur('renderTables.test', childEditor.contentDOM);
 		await waitForTimers();
 
 		expect(editor.state.doc.toString()).toContain('edited\\|cell');
@@ -101,9 +112,7 @@ describe('renderTables', () => {
 		expect(widgetDom).not.toBeNull();
 		expect(cell).not.toBeNull();
 
-		focus('renderTables.test', cell!);
-		cell!.textContent = 'edited table cell';
-		cell!.dispatchEvent(new InputEvent('input', { bubbles: true }));
+		replaceCellDraft(cell!, 'edited table cell');
 		await waitForTimers();
 
 		expect(editor.state.doc.toString()).toContain('edited table cell');
