@@ -666,6 +666,10 @@ class CellView {
 		element.classList.add(CELL);
 		if (isHeader) element.classList.add(HDR);
 		element.onmousedown = event => {
+			if (event.button === 2) {
+				event.preventDefault();
+				return;
+			}
 			if (event.button !== 0) return;
 			const targetElement = eventTargetElement(event.target);
 			const targetNode = event.target as Node | null;
@@ -905,9 +909,13 @@ class TableWidget extends WidgetType {
 
 	// Save the horizontal scroll position of this widget's container before
 	// a dispatch that will rebuild the widget, then restore it after rebuild.
-	private saveAndRestoreScroll(view: EditorView) {
+	private saveAndRestoreScroll(view: EditorView, nextTable: Table | null) {
 		const container = this.findContainer(view);
 		const scrollLeft = container ? container.scrollLeft : 0;
+		if (container && nextTable) {
+			const nextCacheKey = this.cacheKeyFor(this.descriptor, nextTable);
+			tableHeightCache.set(nextCacheKey, container.offsetHeight);
+		}
 		this.descriptor.scrollLeft = scrollLeft;
 		if (scrollLeft > 0) {
 			requestAnimationFrame(() => {
@@ -922,8 +930,14 @@ class TableWidget extends WidgetType {
 	// separates the table from subsequent text, preventing the parser
 	// from absorbing later lines as extra table rows.
 	private apply(view: EditorView, newTable: Table | null, pendingFocus: CellCoord | null = null) {
-		this.saveAndRestoreScroll(view);
+		this.saveAndRestoreScroll(view, newTable);
 		view.plugin(tableEditingPlugin)?.mutateTable(this.descriptor, newTable, pendingFocus);
+	}
+
+	private cacheKeyFor(descriptor: TableDescriptor, table: Table) {
+		const structureVersion = table === descriptor.table ? descriptor.structureVersion : descriptor.structureVersion + 1;
+		const contentVersion = table === descriptor.table ? descriptor.contentVersion : descriptor.contentVersion + 1;
+		return `table_${descriptor.id}_${contentVersion}_${structureVersion}`;
 	}
 
 	public toDOM(view: EditorView) {
@@ -952,6 +966,7 @@ class TableWidget extends WidgetType {
 		const measureRenderedHeight = () => {
 			if (container.isConnected) {
 				tableHeightCache.set(this.cacheKey_, container.offsetHeight);
+				view.requestMeasure();
 			}
 		};
 		const session = new TableWidgetSession(

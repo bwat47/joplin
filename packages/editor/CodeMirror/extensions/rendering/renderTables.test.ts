@@ -120,4 +120,22 @@ describe('renderTables', () => {
 		expect(editor.dom.querySelector<HTMLElement>('.cm-tw')).toBe(widgetDom);
 		expect(tableEditTransactions).toEqual([false]);
 	});
+
+	test('right-clicking an active empty cell keeps the nested editor mounted', async () => {
+		const editor = await createEditor();
+		const cell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(cell).not.toBeNull();
+
+		const childEditor = replaceCellDraft(cell!, '');
+		expect(testing__getNestedCellEditorView(cell!)).toBe(childEditor);
+
+		const emptyCellElement = cell!.parentElement!;
+		const mouseDown = new MouseEvent('mousedown', { bubbles: true, button: 2, cancelable: true });
+		emptyCellElement.dispatchEvent(mouseDown);
+		emptyCellElement.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+
+		expect(mouseDown.defaultPrevented).toBe(true);
+		expect(testing__getNestedCellEditorView(cell!)).toBe(childEditor);
+		expect(cell!.querySelector('.cm-editor')).not.toBeNull();
+	});
 });
