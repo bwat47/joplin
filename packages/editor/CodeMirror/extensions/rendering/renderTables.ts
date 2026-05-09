@@ -6,7 +6,7 @@
 // - Tab/Shift+Tab → navigate cells
 
 import { EditorView, WidgetType, Decoration, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import { EditorState, Range, StateField, Transaction } from '@codemirror/state';
+import { Annotation, EditorState, Range, StateField, Transaction } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { focus, blur } from '@joplin/lib/utils/focusHandler';
 import {
@@ -43,9 +43,12 @@ export interface TableDescriptor {
 	scrollLeft: number;
 	contentVersion: number;
 	structureVersion: number;
+	renderVersion: number;
 	dirty: boolean;
 	dispatchScheduled: boolean;
 }
+
+export const tableEditAnnotation = Annotation.define<{ descriptorId: string }>();
 
 export const cellTextCodec = {
 	toDraft: (tableCellContent: string): string => {
@@ -72,6 +75,7 @@ const makeTableDescriptor = (from: number, to: number, sourceText: string, table
 	scrollLeft: 0,
 	contentVersion: 0,
 	structureVersion: 0,
+	renderVersion: 0,
 	dirty: false,
 	dispatchScheduled: false,
 });
@@ -135,6 +139,7 @@ const reconcileTableDescriptors = (
 	previous: readonly TableDescriptor[],
 	transaction?: Transaction,
 ) => {
+	const tableEdit = transaction?.annotation(tableEditAnnotation);
 	const mappedPrevious = previous.map(descriptor => ({
 		descriptor,
 		from: transaction ? transaction.changes.mapPos(descriptor.from, 1) : descriptor.from,
@@ -144,9 +149,13 @@ const reconcileTableDescriptors = (
 
 	const descriptors: TableDescriptor[] = [];
 	for (const span of findTableSpans(state)) {
-		const match = mappedPrevious.find(candidate => !candidate.used
+		let match = mappedPrevious.find(candidate => !candidate.used
 			&& candidate.from === span.from
 			&& candidate.to === span.to);
+		if (!match && tableEdit) {
+			match = mappedPrevious.find(candidate => !candidate.used
+				&& candidate.descriptor.id === tableEdit.descriptorId);
+		}
 		const descriptor = match?.descriptor ?? makeTableDescriptor(span.from, span.to, span.text, span.table);
 		if (match) match.used = true;
 
@@ -154,7 +163,13 @@ const reconcileTableDescriptors = (
 		descriptor.to = span.to;
 		descriptor.sourceText = span.text;
 
-		if (descriptor.dirty) {
+		const isTableOwnedEdit = tableEdit?.descriptorId === descriptor.id;
+
+		if (isTableOwnedEdit) {
+			descriptor.dirty = false;
+			descriptor.dispatchScheduled = false;
+			descriptor.lastDispatchedText = span.text;
+		} else if (descriptor.dirty) {
 			if (span.text === descriptorSerializedText(descriptor) || span.text === descriptor.lastDispatchedText) {
 				descriptor.dirty = false;
 				descriptor.dispatchScheduled = false;
@@ -164,6 +179,7 @@ const reconcileTableDescriptors = (
 			descriptor.table = cloneTable(span.table);
 			descriptor.lastDispatchedText = span.text;
 			descriptor.contentVersion++;
+			descriptor.renderVersion++;
 		}
 
 		descriptors.push(descriptor);
@@ -237,6 +253,7 @@ class TableEditingController {
 		descriptor.table = table;
 		descriptor.structureVersion++;
 		descriptor.contentVersion++;
+		descriptor.renderVersion++;
 		descriptor.pendingFocus = pendingFocus;
 		this.markDirty(descriptor);
 		this.flushDescriptor(descriptor);
@@ -264,6 +281,8 @@ class TableEditingController {
 				to: descriptor.to,
 				insert: tableTextWithFollowingSeparator(this.view, descriptor, tableText),
 			},
+			selection: { anchor: descriptor.from, head: descriptor.from },
+			annotations: tableEditAnnotation.of({ descriptorId: descriptor.id }),
 		});
 	}
 
@@ -304,17 +323,17 @@ class TableWidget extends WidgetType {
 	) {
 		super();
 		this.cacheKey_ = `table_${descriptor.id}_${descriptor.contentVersion}_${descriptor.structureVersion}`;
-		this.contentVersion_ = descriptor.contentVersion;
+		this.renderVersion_ = descriptor.renderVersion;
 		this.structureVersion_ = descriptor.structureVersion;
 	}
 
 	private cacheKey_: string;
-	private contentVersion_: number;
+	private renderVersion_: number;
 	private structureVersion_: number;
 
 	public eq(other: TableWidget) {
 		return this.descriptor === other.descriptor
-			&& this.contentVersion_ === other.contentVersion_
+			&& this.renderVersion_ === other.renderVersion_
 			&& this.structureVersion_ === other.structureVersion_;
 	}
 

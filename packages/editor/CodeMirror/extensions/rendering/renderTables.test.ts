@@ -2,10 +2,12 @@ import { EditorSelection } from '@codemirror/state';
 import createTestEditor from '../../testing/createTestEditor';
 import renderTables, {
 	cellTextCodec,
+	tableEditAnnotation,
 	tableDescriptorField,
 	testing__resetTableDescriptorIds,
 } from './renderTables';
 import { blur, focus } from '@joplin/lib/utils/focusHandler';
+import { EditorView } from '@codemirror/view';
 
 const tableMarkdown = [
 	'| A | B |',
@@ -73,5 +75,40 @@ describe('renderTables', () => {
 		await waitForTimers();
 
 		expect(editor.state.doc.toString()).toContain('edited\\|cell');
+	});
+
+	test('table-owned edits update the parent document without remounting the table widget', async () => {
+		const tableEditTransactions: boolean[] = [];
+		const editor = await createTestEditor(
+			tableMarkdown,
+			EditorSelection.cursor(0),
+			['TableHeader'],
+			[
+				renderTables,
+				EditorView.updateListener.of(update => {
+					for (const transaction of update.transactions) {
+						if (transaction.annotation(tableEditAnnotation)) {
+							tableEditTransactions.push(transaction.scrollIntoView);
+						}
+					}
+				}),
+			],
+		);
+
+		const descriptor = editor.state.field(tableDescriptorField)[0];
+		const widgetDom = editor.dom.querySelector<HTMLElement>('.cm-tw');
+		const cell = editor.dom.querySelector<HTMLElement>('.cm-tw-text[data-row="1"][data-col="0"]');
+		expect(widgetDom).not.toBeNull();
+		expect(cell).not.toBeNull();
+
+		focus('renderTables.test', cell!);
+		cell!.textContent = 'edited table cell';
+		cell!.dispatchEvent(new InputEvent('input', { bubbles: true }));
+		await waitForTimers();
+
+		expect(editor.state.doc.toString()).toContain('edited table cell');
+		expect(editor.state.field(tableDescriptorField)[0]).toBe(descriptor);
+		expect(editor.dom.querySelector<HTMLElement>('.cm-tw')).toBe(widgetDom);
+		expect(tableEditTransactions).toEqual([false]);
 	});
 });
