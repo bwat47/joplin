@@ -25,8 +25,9 @@ const hiddenStyles = EditorView.theme({
 		overflow: 'hidden',
 
 		// Decrease the size of the content: Work around cursor placement issues when a
-		// line ends with a long hidden decoration:
-		transform: 'scale(0.1, 1)',
+		// line ends with a long hidden decoration. Overflowing text is still measured, so
+		// without a strong scale, selections ending after hidden text are drawn too wide.
+		transform: 'scale(0.001, 1)',
 	},
 });
 
