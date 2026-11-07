@@ -186,14 +186,17 @@ describe('makeInlineReplaceExtension', () => {
 		{ label: 'nested marks', markdown: 'This ***bold italic*** text', from: 0, to: 19, expectedFrom: 0, expectedTo: 22, tags: ['Emphasis', 'StrongEmphasis'] },
 		{ label: 'heading mark from the next line', markdown: 'Text\n## Heading\nMore text', from: 8, to: 20, expectedFrom: 5, expectedTo: 20, tags: ['ATXHeading2'] },
 		{ label: 'link destination', markdown: 'See [Joplin](https://joplinapp.org)', from: 0, to: 11, expectedFrom: 0, expectedTo: 35, tags: ['Link'] },
+		{ label: 'closing HTML tag', markdown: 'If you <sup>create</sup> a file', from: 0, to: 18, expectedFrom: 0, expectedTo: 24, tags: ['HTMLTag'] },
+		{ label: 'opening HTML tag', markdown: 'If you <sup>create</sup> a file', from: 12, to: 31, expectedFrom: 7, expectedTo: 31, tags: ['HTMLTag'] },
 		{ label: 'only the bold content', markdown: 'This is **bold** text', from: 10, to: 14, expectedFrom: 10, expectedTo: 14, tags: ['StrongEmphasis'] },
+		{ label: 'only the HTML content', markdown: 'If you <sup>create</sup> a file', from: 12, to: 18, expectedFrom: 12, expectedTo: 18, tags: ['HTMLTag'] },
 		{ label: 'only the heading content', markdown: '## Heading', from: 3, to: 10, expectedFrom: 3, expectedTo: 10, tags: ['ATXHeading2'] },
 	])('should expand a mouse selection to include the $label', async ({ markdown, from, to, expectedFrom, expectedTo, tags }) => {
 		const editor = await createTestEditor(
 			markdown,
 			EditorSelection.cursor(markdown.length),
 			tags,
-			[replaceFormatCharacters, replaceLinks],
+			[replaceFormatCharacters, replaceLinks, replaceInlineHtml],
 		);
 
 		try {

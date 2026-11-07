@@ -32,6 +32,8 @@ const hiddenStyles = EditorView.theme({
 
 type Options = Pick<ReplacementExtension, 'getRevealStrategy'|'getDecorationRange'> & {
 	shouldHide: (node: SyntaxNodeRef, state: EditorState, parentTags: ParentTags)=> boolean;
+	// Range of the formatted element that the hidden node belongs to. Defaults to the node's parent.
+	getFormattedRange?: (node: SyntaxNodeRef, state: EditorState)=> [number, number]|null;
 };
 
 type GetActivePluginOptions = (node: SyntaxNodeRef, state: EditorState, parentTags: ParentTags)=> Options|undefined;
@@ -54,13 +56,15 @@ const hiddenRangesAt = (state: EditorState, pos: number, getActivePluginOptions:
 		enter: node => {
 			parentTags.set(node.name, (parentTags.get(node.name) ?? 0) + 1);
 			const options = getActivePluginOptions(node, state, parentTags);
+			if (!options) return;
 			const parent = node.node.parent;
-			if (!options || !parent) return;
+			const formattedRange = options.getFormattedRange?.(node, state) ?? (parent ? [parent.from, parent.to] : null);
+			if (!formattedRange) return;
 
 			const range = options.getDecorationRange?.(node, state, parentTags) ?? [node.from, node.to];
 			if (range.length !== 2 || (range[0] !== pos && range[1] !== pos)) return;
 			if (range[0] < line.from || range[1] > line.to) return;
-			result.push({ from: range[0], to: range[1], parentFrom: parent.from, parentTo: parent.to });
+			result.push({ from: range[0], to: range[1], parentFrom: formattedRange[0], parentTo: formattedRange[1] });
 		},
 		leave: node => {
 			parentTags.set(node.name, (parentTags.get(node.name) ?? 0) - 1);

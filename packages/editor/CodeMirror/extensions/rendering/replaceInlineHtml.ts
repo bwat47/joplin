@@ -118,6 +118,7 @@ const createHtmlReplacementExtension = (tagName: string, onRenderContent: OnRend
 		shouldHide: (node, state) => {
 			return !!getMatchingTagRange(node, state);
 		},
+		getFormattedRange: getMatchingTagRange,
 	});
 
 	const styleContent = makeInlineReplaceExtension({
