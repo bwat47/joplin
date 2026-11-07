@@ -1,6 +1,6 @@
-import makeInlineReplaceExtension from './makeInlineReplaceExtension';
+import makeInlineReplaceExtension, { isNodeRevealed, updateInlineDecorationsEffect } from './makeInlineReplaceExtension';
 import { SyntaxNodeRef } from '@lezer/common';
-import { EditorSelection, EditorState, Facet, SelectionRange } from '@codemirror/state';
+import { EditorSelection, EditorState, Facet, SelectionRange, StateField } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { Decoration, EditorView } from '@codemirror/view';
 import { ParentTags, ReplacementExtension } from '../types';
@@ -57,7 +57,7 @@ const hiddenRangesAt = (state: EditorState, pos: number, getActivePluginOptions:
 		enter: node => {
 			parentTags.set(node.name, (parentTags.get(node.name) ?? 0) + 1);
 			const options = getActivePluginOptions(node, state, parentTags);
-			if (!options) return;
+			if (!options || isNodeRevealed(node, state, options.getRevealStrategy?.(node, state, parentTags) ?? 'line')) return;
 			const parent = node.node.parent;
 			const formattedRange = options.getFormattedRange?.(node, state) ?? (parent ? [parent.from, parent.to] : null);
 			if (!formattedRange) return;
@@ -100,6 +100,17 @@ const expandRangeOverHiddenMarks = (state: EditorState, range: SelectionRange, g
 	return range.anchor <= range.head ? EditorSelection.range(from, to) : EditorSelection.range(to, from);
 };
 
+// Decorations are computed from the selection before a mouse drag until mouseup, so marks are hidden
+// or revealed based on this selection. Mirrors the reset logic in makeInlineReplaceExtension.
+const dragStartSelectionField = StateField.define<EditorSelection|null>({
+	create: () => null,
+	update: (value, tr) => {
+		if (tr.docChanged || tr.effects.some(effect => effect.is(updateInlineDecorationsEffect))) return null;
+		if (tr.isUserEvent('select.pointer')) return value ?? tr.startState.selection;
+		return value;
+	},
+});
+
 const hideReplaceFacet = Facet.define<Options>({
 	combine: values => values.flat(),
 	enables: facet => {
@@ -109,12 +120,16 @@ const hideReplaceFacet = Facet.define<Options>({
 		};
 		return [
 			hiddenStyles,
+			dragStartSelectionField,
 			EditorState.transactionFilter.of(tr => {
 				if (!tr.selection || tr.docChanged || !tr.isUserEvent('select.pointer')) return tr;
-
 				const selection = tr.selection;
+				if (selection.ranges.every(range => range.empty)) return tr;
+
+				const dragStartSelection = tr.startState.field(dragStartSelectionField) ?? tr.startState.selection;
+				const revealState = tr.startState.update({ selection: dragStartSelection }).state;
 				const ranges = selection.ranges.map(range => (
-					range.empty ? range : expandRangeOverHiddenMarks(tr.startState, range, getActivePluginOptions)
+					range.empty ? range : expandRangeOverHiddenMarks(revealState, range, getActivePluginOptions)
 				));
 				if (ranges.every((range, index) => range === selection.ranges[index])) return tr;
 
