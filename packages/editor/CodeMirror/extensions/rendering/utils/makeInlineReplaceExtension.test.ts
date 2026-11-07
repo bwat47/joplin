@@ -178,6 +178,51 @@ describe('makeInlineReplaceExtension', () => {
 		}
 	});
 
+	it.each([
+		{ label: 'closing bold mark', markdown: 'This is **bold** text', from: 0, to: 14, expectedFrom: 0, expectedTo: 16, tags: ['StrongEmphasis'] },
+		{ label: 'opening bold mark', markdown: 'This is **bold** text', from: 10, to: 21, expectedFrom: 8, expectedTo: 21, tags: ['StrongEmphasis'] },
+		{ label: 'bold at the start of a line', markdown: '**bold** text', from: 0, to: 6, expectedFrom: 0, expectedTo: 8, tags: ['StrongEmphasis'] },
+		{ label: 'bold at the end of a line', markdown: 'This is **bold**', from: 10, to: 16, expectedFrom: 8, expectedTo: 16, tags: ['StrongEmphasis'] },
+		{ label: 'nested marks', markdown: 'This ***bold italic*** text', from: 0, to: 19, expectedFrom: 0, expectedTo: 22, tags: ['Emphasis', 'StrongEmphasis'] },
+		{ label: 'heading mark from the next line', markdown: 'Text\n## Heading\nMore text', from: 8, to: 20, expectedFrom: 5, expectedTo: 20, tags: ['ATXHeading2'] },
+		{ label: 'link destination', markdown: 'See [Joplin](https://joplinapp.org)', from: 0, to: 11, expectedFrom: 0, expectedTo: 35, tags: ['Link'] },
+		{ label: 'only the bold content', markdown: 'This is **bold** text', from: 10, to: 14, expectedFrom: 10, expectedTo: 14, tags: ['StrongEmphasis'] },
+		{ label: 'only the heading content', markdown: '## Heading', from: 3, to: 10, expectedFrom: 3, expectedTo: 10, tags: ['ATXHeading2'] },
+	])('should expand a mouse selection to include the $label', async ({ markdown, from, to, expectedFrom, expectedTo, tags }) => {
+		const editor = await createTestEditor(
+			markdown,
+			EditorSelection.cursor(markdown.length),
+			tags,
+			[replaceFormatCharacters, replaceLinks],
+		);
+
+		try {
+			for (const [anchor, head, expectedAnchor, expectedHead] of [[from, to, expectedFrom, expectedTo], [to, from, expectedTo, expectedFrom]]) {
+				editor.dispatch({ selection: EditorSelection.cursor(markdown.length) });
+				editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+				editor.dispatch({ selection: EditorSelection.range(anchor, head), userEvent: 'select.pointer' });
+				editor.dom.ownerDocument.dispatchEvent(new MouseEvent('mouseup', { button: 0 }));
+				await jest.runAllTimersAsync();
+
+				expect(editor.state.selection.main).toMatchObject({ anchor: expectedAnchor, head: expectedHead });
+			}
+		} finally {
+			editor.destroy();
+		}
+	});
+
+	it('should not expand a selection made with the keyboard', async () => {
+		const markdown = 'This is **bold** text';
+		const editor = await createTestEditor(markdown, EditorSelection.cursor(markdown.length), ['StrongEmphasis'], [replaceFormatCharacters]);
+
+		try {
+			editor.dispatch({ selection: EditorSelection.range(0, 14), userEvent: 'select' });
+			expect(editor.state.selection.main).toMatchObject({ anchor: 0, head: 14 });
+		} finally {
+			editor.destroy();
+		}
+	});
+
 	it('should update markdown decorations when the mouse is down and the document changes', async () => {
 		const markdown = '**test**...';
 		const initialSelection = EditorSelection.cursor(markdown.length);

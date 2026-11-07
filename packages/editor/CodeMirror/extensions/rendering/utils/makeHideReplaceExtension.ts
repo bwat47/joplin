@@ -1,6 +1,7 @@
 import makeInlineReplaceExtension from './makeInlineReplaceExtension';
 import { SyntaxNodeRef } from '@lezer/common';
-import { EditorState, Facet } from '@codemirror/state';
+import { EditorSelection, EditorState, Facet, SelectionRange } from '@codemirror/state';
+import { syntaxTree } from '@codemirror/language';
 import { Decoration, EditorView } from '@codemirror/view';
 import { ParentTags, ReplacementExtension } from '../types';
 
@@ -33,15 +34,87 @@ type Options = Pick<ReplacementExtension, 'getRevealStrategy'|'getDecorationRang
 	shouldHide: (node: SyntaxNodeRef, state: EditorState, parentTags: ParentTags)=> boolean;
 };
 
+type GetActivePluginOptions = (node: SyntaxNodeRef, state: EditorState, parentTags: ParentTags)=> Options|undefined;
+
+interface HiddenRange {
+	from: number;
+	to: number;
+	parentFrom: number;
+	parentTo: number;
+}
+
+const hiddenRangesAt = (state: EditorState, pos: number, getActivePluginOptions: GetActivePluginOptions) => {
+	const result: HiddenRange[] = [];
+	const parentTags = new Map<string, number>();
+	// Scan the whole line: a decoration range can extend beyond its node (e.g. the space after "##").
+	const line = state.doc.lineAt(pos);
+	syntaxTree(state).iterate({
+		from: line.from,
+		to: line.to,
+		enter: node => {
+			parentTags.set(node.name, (parentTags.get(node.name) ?? 0) + 1);
+			const options = getActivePluginOptions(node, state, parentTags);
+			const parent = node.node.parent;
+			if (!options || !parent) return;
+
+			const range = options.getDecorationRange?.(node, state, parentTags) ?? [node.from, node.to];
+			if (range.length !== 2 || (range[0] !== pos && range[1] !== pos)) return;
+			if (range[0] < line.from || range[1] > line.to) return;
+			result.push({ from: range[0], to: range[1], parentFrom: parent.from, parentTo: parent.to });
+		},
+		leave: node => {
+			parentTags.set(node.name, (parentTags.get(node.name) ?? 0) - 1);
+		},
+	});
+	return result;
+};
+
+// Hidden marks are nearly zero-width, so a drag that crosses a formatted node's edge often stops just
+// inside a mark, leaving it unselected once revealed on mouseup (see #16546). Expand over such marks.
+const expandRangeOverHiddenMarks = (state: EditorState, range: SelectionRange, getActivePluginOptions: GetActivePluginOptions) => {
+	let { from, to } = range;
+
+	// Repeat to handle adjacent marks from nested nodes (e.g. ***text***)
+	for (let i = 0; i < 10; i++) {
+		const rangesAtFrom = hiddenRangesAt(state, from, getActivePluginOptions);
+		const rangesAtTo = hiddenRangesAt(state, to, getActivePluginOptions);
+
+		const closingMark = rangesAtTo.find(hidden => hidden.from === to && hidden.to > to && (
+			from < hidden.parentFrom || (from === hidden.parentFrom && rangesAtFrom.some(other => other.from === from))
+		));
+		const openingMark = rangesAtFrom.find(hidden => hidden.to === from && hidden.from < from && (
+			to > hidden.parentTo || (to === hidden.parentTo && rangesAtTo.some(other => other.to === to))
+		));
+		if (!closingMark && !openingMark) break;
+
+		if (closingMark) to = closingMark.to;
+		if (openingMark) from = openingMark.from;
+	}
+
+	if (from === range.from && to === range.to) return range;
+	return range.anchor <= range.head ? EditorSelection.range(from, to) : EditorSelection.range(to, from);
+};
+
 const hideReplaceFacet = Facet.define<Options>({
 	combine: values => values.flat(),
 	enables: facet => {
-		const getActivePluginOptions = (node: SyntaxNodeRef, state: EditorState, parentTags: ParentTags) => {
+		const getActivePluginOptions: GetActivePluginOptions = (node, state, parentTags) => {
 			const allPluginOptions = state.facet(facet);
 			return allPluginOptions.find(o => o.shouldHide(node, state, parentTags));
 		};
 		return [
 			hiddenStyles,
+			EditorState.transactionFilter.of(tr => {
+				if (!tr.selection || tr.docChanged || !tr.isUserEvent('select.pointer')) return tr;
+
+				const selection = tr.selection;
+				const ranges = selection.ranges.map(range => (
+					range.empty ? range : expandRangeOverHiddenMarks(tr.startState, range, getActivePluginOptions)
+				));
+				if (ranges.every((range, index) => range === selection.ranges[index])) return tr;
+
+				return [tr, { selection: EditorSelection.create(ranges, selection.mainIndex) }];
+			}),
 			makeInlineReplaceExtension({
 				createDecoration: (node, state, parentTags) => {
 					if (getActivePluginOptions(node, state, parentTags)) {
