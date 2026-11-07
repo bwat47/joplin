@@ -191,17 +191,24 @@ describe('makeInlineReplaceExtension', () => {
 		{ label: 'only the bold content', markdown: 'This is **bold** text', from: 10, to: 14, expectedFrom: 10, expectedTo: 14, tags: ['StrongEmphasis'] },
 		{ label: 'only the HTML content', markdown: 'If you <sup>create</sup> a file', from: 12, to: 18, expectedFrom: 12, expectedTo: 18, tags: ['HTMLTag'] },
 		{ label: 'only the heading content', markdown: '## Heading', from: 3, to: 10, expectedFrom: 3, expectedTo: 10, tags: ['ATXHeading2'] },
-	])('should expand a mouse selection to include the $label', async ({ markdown, from, to, expectedFrom, expectedTo, tags }) => {
+		{ label: 'bold mark revealed by the cursor', markdown: 'This is **bold** text', cursor: 12, from: 0, to: 14, expectedFrom: 0, expectedTo: 14, tags: ['StrongEmphasis'] },
+		{ label: 'HTML tag revealed by the cursor', markdown: 'If you <sup>create</sup> a file', cursor: 15, from: 12, to: 31, expectedFrom: 12, expectedTo: 31, tags: ['HTMLTag'] },
+	])('should adjust a mouse selection over the $label', async ({ markdown, cursor, from, to, expectedFrom, expectedTo, tags }) => {
+		// The extra line keeps the default cursor away from the formatting, so the marks start hidden
+		const doc = `${markdown}
+
+End`;
+		const startCursor = EditorSelection.cursor(cursor ?? doc.length);
 		const editor = await createTestEditor(
-			markdown,
-			EditorSelection.cursor(markdown.length),
+			doc,
+			startCursor,
 			tags,
 			[replaceFormatCharacters, replaceLinks, replaceInlineHtml],
 		);
 
 		try {
 			for (const [anchor, head, expectedAnchor, expectedHead] of [[from, to, expectedFrom, expectedTo], [to, from, expectedTo, expectedFrom]]) {
-				editor.dispatch({ selection: EditorSelection.cursor(markdown.length) });
+				editor.dispatch({ selection: startCursor });
 				editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
 				editor.dispatch({ selection: EditorSelection.range(anchor, head), userEvent: 'select.pointer' });
 				editor.dom.ownerDocument.dispatchEvent(new MouseEvent('mouseup', { button: 0 }));

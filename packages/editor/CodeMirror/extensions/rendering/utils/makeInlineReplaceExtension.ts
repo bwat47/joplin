@@ -6,11 +6,11 @@ import { ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { EditorSelection, EditorState, Range, StateEffect } from '@codemirror/state';
 import { SyntaxNodeRef } from '@lezer/common';
-import { ReplacementExtension } from '../types';
+import { ReplacementExtension, RevealStrategy } from '../types';
 import nodeIntersectsSelection from './nodeIntersectsSelection';
 import clampSelectionToDocument from '../../../utils/clampSelectionToDocument';
 
-const updateInlineDecorationsEffect = StateEffect.define();
+export const updateInlineDecorationsEffect = StateEffect.define();
 
 interface MouseSelectionState {
 	initialSelection: EditorSelection;
@@ -20,6 +20,24 @@ interface VisibleRange {
 	from: number;
 	to: number;
 }
+
+export const isNodeRevealed = (node: SyntaxNodeRef, state: EditorState, strategy: RevealStrategy) => {
+	const selection = state.selection;
+	if (typeof strategy === 'boolean') {
+		return strategy;
+	} else if (strategy === 'line') {
+		const cursorLine = state.doc.lineAt(selection.main.anchor);
+		const nodeLine = state.doc.lineAt(node.from);
+		const lineContainsSelection = cursorLine.number === nodeLine.number;
+		return lineContainsSelection || nodeIntersectsSelection(selection, node);
+	} else if (strategy === 'select') {
+		return nodeIntersectsSelection(selection, node);
+	} else if (strategy === 'active') {
+		const parent = node.node.parent;
+		return nodeIntersectsSelection(selection, node) || (!!parent && nodeIntersectsSelection(selection, parent));
+	}
+	return false;
+};
 
 export const makeInlineReplaceExtension = (extensionSpec: ReplacementExtension) => ViewPlugin.fromClass(class {
 	public decorations: DecorationSet = Decoration.set([]);
@@ -64,8 +82,6 @@ export const makeInlineReplaceExtension = (extensionSpec: ReplacementExtension) 
 		if (this.mouseSelectionBefore_) {
 			state = state.update({ selection }).state;
 		}
-		const cursorLine = doc.lineAt(selection.main.anchor);
-
 		const parentTagCounts = new Map<string, number>();
 		const decorateNode = (node: SyntaxNodeRef) => {
 			const widgetOrDecoration = extensionSpec.createDecoration(node, state, parentTagCounts);
@@ -103,20 +119,7 @@ export const makeInlineReplaceExtension = (extensionSpec: ReplacementExtension) 
 					parentTagCounts.set(node.name, (parentTagCounts.get(node.name) ?? 0) + 1);
 
 					const strategy = extensionSpec.getRevealStrategy?.(node, state, parentTagCounts) ?? 'line';
-
-					let isSelected = false;
-					if (typeof strategy === 'boolean') {
-						isSelected = strategy;
-					} else if (strategy === 'line') {
-						const nodeLine = doc.lineAt(node.from);
-						const lineContainsSelection = cursorLine.number === nodeLine.number;
-						isSelected = lineContainsSelection || nodeIntersectsSelection(selection, node);
-					} else if (strategy === 'select') {
-						isSelected = nodeIntersectsSelection(selection, node);
-					} else if (strategy === 'active') {
-						const parent = node.node.parent;
-						isSelected = nodeIntersectsSelection(selection, node) || (!!parent && nodeIntersectsSelection(selection, parent));
-					}
+					const isSelected = isNodeRevealed(node, state, strategy);
 
 					const shouldHide = (
 						(extensionSpec.hideWhenContainsSelection ?? true) && isSelected
