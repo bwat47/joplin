@@ -17,6 +17,8 @@ interface TestCase {
 	renderedText: string;
 	selectionFrom: number;
 	selectionTo: number;
+	expectedSelectionFrom?: number;
+	expectedSelectionTo?: number;
 	expectedSyntaxTreeTags: string[];
 	extensions: Extension[];
 }
@@ -28,6 +30,8 @@ const testCases: TestCase[] = [
 		renderedText: 'bold',
 		selectionFrom: 2,
 		selectionTo: 6,
+		expectedSelectionFrom: 0,
+		expectedSelectionTo: 8,
 		expectedSyntaxTreeTags: ['StrongEmphasis'],
 		extensions: [replaceFormatCharacters],
 	},
@@ -37,6 +41,8 @@ const testCases: TestCase[] = [
 		renderedText: 'bold italic',
 		selectionFrom: 3,
 		selectionTo: 14,
+		expectedSelectionFrom: 0,
+		expectedSelectionTo: 17,
 		expectedSyntaxTreeTags: ['Emphasis', 'StrongEmphasis'],
 		extensions: [replaceFormatCharacters],
 	},
@@ -46,6 +52,8 @@ const testCases: TestCase[] = [
 		renderedText: 'Heading',
 		selectionFrom: 2,
 		selectionTo: 9,
+		expectedSelectionFrom: 0,
+		expectedSelectionTo: 9,
 		expectedSyntaxTreeTags: ['ATXHeading1'],
 		extensions: [replaceFormatCharacters],
 	},
@@ -64,6 +72,8 @@ const testCases: TestCase[] = [
 		renderedText: 'Joplin website',
 		selectionFrom: 1,
 		selectionTo: 15,
+		expectedSelectionFrom: 0,
+		expectedSelectionTo: 39,
 		expectedSyntaxTreeTags: ['Link'],
 		extensions: [replaceLinks],
 	},
@@ -73,6 +83,8 @@ const testCases: TestCase[] = [
 		renderedText: 'Joplin website',
 		selectionFrom: 3,
 		selectionTo: 17,
+		expectedSelectionFrom: 0,
+		expectedSelectionTo: 43,
 		expectedSyntaxTreeTags: ['Link', 'StrongEmphasis'],
 		extensions: [replaceFormatCharacters, replaceLinks],
 	},
@@ -82,6 +94,8 @@ const testCases: TestCase[] = [
 		renderedText: 'red text',
 		selectionFrom: 25,
 		selectionTo: 33,
+		expectedSelectionFrom: 0,
+		expectedSelectionTo: 40,
 		expectedSyntaxTreeTags: ['HTMLTag'],
 		extensions: [replaceInlineHtml],
 	},
@@ -119,11 +133,19 @@ const directedTestCases = testCases.flatMap(testCase => [
 		...testCase,
 		direction: 'forward',
 		selection: EditorSelection.range(testCase.selectionFrom, testCase.selectionTo),
+		expectedSelection: {
+			anchor: testCase.expectedSelectionFrom ?? testCase.selectionFrom,
+			head: testCase.expectedSelectionTo ?? testCase.selectionTo,
+		},
 	},
 	{
 		...testCase,
 		direction: 'backward',
 		selection: EditorSelection.range(testCase.selectionTo, testCase.selectionFrom),
+		expectedSelection: {
+			anchor: testCase.expectedSelectionTo ?? testCase.selectionTo,
+			head: testCase.expectedSelectionFrom ?? testCase.selectionFrom,
+		},
 	},
 ]);
 
@@ -156,7 +178,7 @@ describe('makeInlineReplaceExtension', () => {
 	});
 
 	it.each(directedTestCases)('should include Markdown syntax for $label in a $direction mouse selection', async ({
-		markdown, renderedText, selection, expectedSyntaxTreeTags, extensions,
+		markdown, renderedText, selection, expectedSelection, expectedSyntaxTreeTags, extensions,
 	}) => {
 		const editor = await createTestEditor(
 			markdown,
@@ -170,10 +192,6 @@ describe('makeInlineReplaceExtension', () => {
 			editor.dispatch({ selection, userEvent: 'select.pointer' });
 			jest.runAllTimers();
 
-			const expectedSelection = {
-				anchor: selection.anchor,
-				head: selection.head,
-			};
 			expect(editor.state.selection.main).toMatchObject(expectedSelection);
 			expectTextContentToBe(visibleEditorText(editor), renderedText);
 
@@ -197,9 +215,11 @@ describe('makeInlineReplaceExtension', () => {
 		{ label: 'link destination', markdown: 'See [Joplin](https://joplinapp.org)', from: 0, to: 11, expectedFrom: 0, expectedTo: 35, tags: ['Link'] },
 		{ label: 'closing HTML tag', markdown: 'If you <sup>create</sup> a file', from: 0, to: 18, expectedFrom: 0, expectedTo: 24, tags: ['HTMLTag'] },
 		{ label: 'opening HTML tag', markdown: 'If you <sup>create</sup> a file', from: 12, to: 31, expectedFrom: 7, expectedTo: 31, tags: ['HTMLTag'] },
-		{ label: 'only the bold content', markdown: 'This is **bold** text', from: 10, to: 14, expectedFrom: 10, expectedTo: 14, tags: ['StrongEmphasis'] },
-		{ label: 'only the HTML content', markdown: 'If you <sup>create</sup> a file', from: 12, to: 18, expectedFrom: 12, expectedTo: 18, tags: ['HTMLTag'] },
-		{ label: 'only the heading content', markdown: '## Heading', from: 3, to: 10, expectedFrom: 3, expectedTo: 10, tags: ['ATXHeading2'] },
+		{ label: 'bold content', markdown: 'This is **bold** text', from: 10, to: 14, expectedFrom: 8, expectedTo: 16, tags: ['StrongEmphasis'] },
+		{ label: 'end of the bold content', markdown: 'This is **bold** text', from: 12, to: 14, expectedFrom: 12, expectedTo: 14, tags: ['StrongEmphasis'] },
+		{ label: 'HTML content', markdown: 'If you <sup>create</sup> a file', from: 12, to: 18, expectedFrom: 7, expectedTo: 24, tags: ['HTMLTag'] },
+		{ label: 'heading content', markdown: '## Heading', from: 3, to: 10, expectedFrom: 0, expectedTo: 10, tags: ['ATXHeading2'] },
+		{ label: 'bold content and its closing mark', markdown: 'This is **bold** text', from: 10, to: 16, expectedFrom: 8, expectedTo: 16, tags: ['StrongEmphasis'] },
 		{ label: 'bold mark revealed by the cursor', markdown: 'This is **bold** text', cursor: 12, from: 0, to: 14, expectedFrom: 0, expectedTo: 14, tags: ['StrongEmphasis'] },
 		{ label: 'HTML tag revealed by the cursor', markdown: 'If you <sup>create</sup> a file', cursor: 15, from: 12, to: 31, expectedFrom: 12, expectedTo: 31, tags: ['HTMLTag'] },
 	])('should adjust a mouse selection over the $label', async ({ markdown, cursor, from, to, expectedFrom, expectedTo, tags }) => {

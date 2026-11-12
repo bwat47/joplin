@@ -74,8 +74,11 @@ const hiddenRangesAt = (state: EditorState, pos: number, getActivePluginOptions:
 	return result;
 };
 
-// Hidden marks are nearly zero-width, so a drag that crosses a formatted node's edge often stops just
-// inside a mark, leaving it unselected once revealed on mouseup (see #16546). Expand over such marks.
+const isSameNode = (a: HiddenRange, b: HiddenRange) => a.parentFrom === b.parentFrom && a.parentTo === b.parentTo;
+
+// Hidden marks are nearly zero-width, so both sides of a mark are drawn at the same position and a drag
+// can end on either (see #16546). Expand over a mark when the selection covers its node's content up to
+// the other side of the node, so the result doesn't depend on which side the drag ended on.
 const expandRangeOverHiddenMarks = (state: EditorState, range: SelectionRange, getActivePluginOptions: GetActivePluginOptions) => {
 	let { from, to } = range;
 
@@ -85,10 +88,10 @@ const expandRangeOverHiddenMarks = (state: EditorState, range: SelectionRange, g
 		const rangesAtTo = hiddenRangesAt(state, to, getActivePluginOptions);
 
 		const closingMark = rangesAtTo.find(hidden => hidden.from === to && hidden.to > to && (
-			from < hidden.parentFrom || (from === hidden.parentFrom && rangesAtFrom.some(other => other.from === from))
+			from <= hidden.parentFrom || rangesAtFrom.some(other => isSameNode(other, hidden) && other.to === from)
 		));
 		const openingMark = rangesAtFrom.find(hidden => hidden.to === from && hidden.from < from && (
-			to > hidden.parentTo || (to === hidden.parentTo && rangesAtTo.some(other => other.to === to))
+			to >= hidden.parentTo || rangesAtTo.some(other => isSameNode(other, hidden) && other.from === to)
 		));
 		if (!closingMark && !openingMark) break;
 
