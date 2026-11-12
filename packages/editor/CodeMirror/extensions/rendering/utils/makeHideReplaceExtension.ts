@@ -1,6 +1,6 @@
 import makeInlineReplaceExtension, { isNodeRevealed, updateInlineDecorationsEffect } from './makeInlineReplaceExtension';
 import { SyntaxNodeRef } from '@lezer/common';
-import { EditorSelection, EditorState, Facet, SelectionRange, StateField } from '@codemirror/state';
+import { EditorSelection, EditorState, Facet, SelectionRange, StateEffect, StateField } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { Decoration, EditorView } from '@codemirror/view';
 import { ParentTags, ReplacementExtension } from '../types';
@@ -100,14 +100,28 @@ const expandRangeOverHiddenMarks = (state: EditorState, range: SelectionRange, g
 	return range.anchor <= range.head ? EditorSelection.range(from, to) : EditorSelection.range(to, from);
 };
 
+const setDragStartSelectionEffect = StateEffect.define<EditorSelection>();
+
 // Decorations are computed from the selection before a mouse drag until mouseup, so marks are hidden
 // or revealed based on this selection. Mirrors the reset logic in makeInlineReplaceExtension.
+// Touch gestures don't freeze decorations (and may never fire mouseup), so only mouse presses are tracked.
 const dragStartSelectionField = StateField.define<EditorSelection|null>({
 	create: () => null,
 	update: (value, tr) => {
 		if (tr.docChanged || tr.effects.some(effect => effect.is(updateInlineDecorationsEffect))) return null;
-		if (tr.isUserEvent('select.pointer')) return value ?? tr.startState.selection;
+		for (const effect of tr.effects) {
+			if (effect.is(setDragStartSelectionEffect)) return effect.value;
+		}
 		return value;
+	},
+});
+
+const trackDragStartSelection = EditorView.domEventHandlers({
+	pointerdown: (event, view) => {
+		if (event.pointerType === 'mouse' && event.button === 0) {
+			view.dispatch({ effects: setDragStartSelectionEffect.of(view.state.selection) });
+		}
+		return false;
 	},
 });
 
@@ -121,6 +135,7 @@ const hideReplaceFacet = Facet.define<Options>({
 		return [
 			hiddenStyles,
 			dragStartSelectionField,
+			trackDragStartSelection,
 			EditorState.transactionFilter.of(tr => {
 				if (!tr.selection || tr.docChanged || !tr.isUserEvent('select.pointer')) return tr;
 				const selection = tr.selection;

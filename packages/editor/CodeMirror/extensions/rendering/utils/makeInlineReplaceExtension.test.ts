@@ -1,4 +1,5 @@
 import { EditorSelection, Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import createTestEditor from '../../../testing/createTestEditor';
 import replaceBackslashEscapes from '../replaceBackslashEscapes';
 import replaceBulletLists from '../replaceBulletLists';
@@ -141,6 +142,14 @@ const expectTextContentToBe = (actual: string, expected: string) => {
 	expect(actual).toBe(expected);
 };
 
+const pressPointer = (editor: EditorView, pointerType: 'mouse'|'touch') => {
+	// jsdom doesn't support PointerEvent
+	const pointerDown = new MouseEvent('pointerdown', { button: 0, bubbles: true });
+	Object.defineProperty(pointerDown, 'pointerType', { value: pointerType });
+	editor.contentDOM.dispatchEvent(pointerDown);
+	editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+};
+
 describe('makeInlineReplaceExtension', () => {
 	beforeAll(() => {
 		jest.useFakeTimers({ advanceTimers: true });
@@ -157,7 +166,7 @@ describe('makeInlineReplaceExtension', () => {
 		);
 
 		try {
-			editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+			pressPointer(editor, 'mouse');
 			editor.dispatch({ selection, userEvent: 'select.pointer' });
 			jest.runAllTimers();
 
@@ -209,7 +218,9 @@ End`;
 		try {
 			for (const [anchor, head, expectedAnchor, expectedHead] of [[from, to, expectedFrom, expectedTo], [to, from, expectedTo, expectedFrom]]) {
 				editor.dispatch({ selection: startCursor });
-				editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+				pressPointer(editor, 'mouse');
+				// The cursor placed on mousedown can reveal marks, but decorations stay frozen until mouseup
+				editor.dispatch({ selection: EditorSelection.cursor(anchor), userEvent: 'select.pointer' });
 				editor.dispatch({ selection: EditorSelection.range(anchor, head), userEvent: 'select.pointer' });
 				editor.dom.ownerDocument.dispatchEvent(new MouseEvent('mouseup', { button: 0 }));
 				await jest.runAllTimersAsync();
@@ -233,6 +244,21 @@ End`;
 		}
 	});
 
+	it('should not expand a touch selection using the selection from an earlier gesture', async () => {
+		const markdown = 'This is **bold** text\n\nEnd';
+		const editor = await createTestEditor(markdown, EditorSelection.cursor(markdown.length), ['StrongEmphasis'], [replaceFormatCharacters]);
+
+		try {
+			pressPointer(editor, 'touch');
+			editor.dispatch({ selection: EditorSelection.cursor(12), userEvent: 'select.pointer' });
+			pressPointer(editor, 'touch');
+			editor.dispatch({ selection: EditorSelection.range(0, 14), userEvent: 'select.pointer' });
+			expect(editor.state.selection.main).toMatchObject({ anchor: 0, head: 14 });
+		} finally {
+			editor.destroy();
+		}
+	});
+
 	it('should update markdown decorations when the mouse is down and the document changes', async () => {
 		const markdown = '**test**...';
 		const initialSelection = EditorSelection.cursor(markdown.length);
@@ -244,7 +270,7 @@ End`;
 		);
 
 		try {
-			editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+			pressPointer(editor, 'mouse');
 			editor.dispatch({ selection: initialSelection, userEvent: 'select.pointer' });
 			jest.runAllTimers();
 
