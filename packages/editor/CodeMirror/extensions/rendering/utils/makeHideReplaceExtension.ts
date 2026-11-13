@@ -87,10 +87,10 @@ const expandRangeOverHiddenMarks = (state: EditorState, range: SelectionRange, g
 		const rangesAtFrom = hiddenRangesAt(state, from, getActivePluginOptions);
 		const rangesAtTo = hiddenRangesAt(state, to, getActivePluginOptions);
 
-		const closingMark = rangesAtTo.find(hidden => hidden.from === to && hidden.to > to && (
+		const closingMark = rangesAtTo.find(hidden => hidden.from === to && hidden.to > to && hidden.from > hidden.parentFrom && (
 			from <= hidden.parentFrom || rangesAtFrom.some(other => isSameNode(other, hidden) && other.to === from)
 		));
-		const openingMark = rangesAtFrom.find(hidden => hidden.to === from && hidden.from < from && (
+		const openingMark = rangesAtFrom.find(hidden => hidden.to === from && hidden.from < from && hidden.to < hidden.parentTo && (
 			to >= hidden.parentTo || rangesAtTo.some(other => isSameNode(other, hidden) && other.from === to)
 		));
 		if (!closingMark && !openingMark) break;
