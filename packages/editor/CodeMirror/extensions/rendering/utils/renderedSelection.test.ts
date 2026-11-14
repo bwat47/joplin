@@ -7,6 +7,7 @@ import replaceLinks from '../replaceLinks';
 import replaceInlineHtml from '../replaceInlineHtml';
 import replaceBackslashEscapes from '../replaceBackslashEscapes';
 import renderingExtension from '../renderingExtension';
+import renderedSelection, { hiddenSyntaxFacet } from './renderedSelection';
 
 const mouseDown = (editor: EditorView) => editor.dom.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
 const mouseUp = (editor: EditorView) => editor.dom.ownerDocument.dispatchEvent(new MouseEvent('mouseup', { button: 0 }));
@@ -118,6 +119,29 @@ describe('renderedSelection', () => {
 			const expectedSelection = editor.state.selection;
 			await jest.runAllTimersAsync();
 			expect(editor.state.selection.eq(expectedSelection)).toBe(true);
+		} finally {
+			editor.destroy();
+		}
+	});
+
+	it('should keep the anchor\'s hidden syntax after a drag scrolls it out of the viewport', async () => {
+		let visibleSyntax = [
+			{ from: 0, to: 2, ownerFrom: 0, ownerTo: 7 },
+			{ from: 5, to: 7, ownerFrom: 0, ownerTo: 7 },
+		];
+		const editor = await createTestEditor('**one**\n\n*two*\n\nAway', EditorSelection.cursor(19), [], [
+			renderedSelection, hiddenSyntaxFacet.of(() => visibleSyntax),
+		]);
+		try {
+			mouseDown(editor);
+			visibleSyntax = [
+				{ from: 9, to: 10, ownerFrom: 9, ownerTo: 14 },
+				{ from: 13, to: 14, ownerFrom: 9, ownerTo: 14 },
+			];
+			editor.dispatch({ selection: EditorSelection.range(2, 13), userEvent: 'select.pointer' });
+			mouseUp(editor);
+			await jest.runAllTimersAsync();
+			expect(editor.state.selection.main).toMatchObject({ anchor: 0, head: 14 });
 		} finally {
 			editor.destroy();
 		}

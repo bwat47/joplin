@@ -8,6 +8,7 @@ export const hiddenSyntaxFacet = Facet.define<(view: EditorView)=> readonly Hidd
 
 interface MouseGesture {
 	initialSelection: EditorSelection;
+	initialHiddenSyntax: readonly HiddenSyntaxRange[];
 	hasPointerSelection: boolean;
 }
 
@@ -43,6 +44,7 @@ const renderedSelection = ViewPlugin.fromClass(class {
 		this.cancelGesture();
 		this.gesture = {
 			initialSelection: this.view.state.selection,
+			initialHiddenSyntax: this.hiddenSyntax(),
 			hasPointerSelection: false,
 		};
 	};
@@ -57,7 +59,11 @@ const renderedSelection = ViewPlugin.fromClass(class {
 			this.pendingRefresh = null;
 			const currentSelection = this.view.state.selection;
 			const selection = gesture.hasPointerSelection
-				? normalizeRenderedSelection(currentSelection, this.hiddenSyntax())
+				? normalizeRenderedSelection(currentSelection, [
+					// Renderers only decorate the main viewport, which may no longer contain
+					// the anchor's line. Reveal state is frozen, so the snapshot is still valid.
+					...gesture.initialHiddenSyntax, ...this.hiddenSyntax(),
+				])
 				: currentSelection;
 			this.gesture = null;
 			this.view.dispatch({
