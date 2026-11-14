@@ -17,6 +17,9 @@ describe('normalizeRenderedSelection', () => {
 		];
 		expect(normalizeRenderedSelection(EditorSelection.single(2, 5), hidden).main).toMatchObject({ from: 0, to: 7 });
 		expect(normalizeRenderedSelection(EditorSelection.single(8, 11), hidden).main).toMatchObject({ from: 7, to: 12 });
+		// Endpoints on the far side of the merged "***" run must not pick up the neighbour's marks.
+		expect(normalizeRenderedSelection(EditorSelection.single(12, 5), hidden).main).toMatchObject({ anchor: 12, head: 7 });
+		expect(normalizeRenderedSelection(EditorSelection.single(0, 8), hidden).main).toMatchObject({ anchor: 0, head: 7 });
 	});
 
 	it('should include nested delimiters without depending on provider order', () => {

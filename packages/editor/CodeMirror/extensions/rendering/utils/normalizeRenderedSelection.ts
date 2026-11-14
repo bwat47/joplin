@@ -27,9 +27,16 @@ const normalizeRenderedSelection = (selection: EditorSelection, hiddenSyntax: re
 	const ranges = selection.ranges.map(range => {
 		if (range.empty) return range;
 
-		let { from, to } = range;
+		// Drop hidden syntax at the edges first: hit testing can land on either side
+		// of a merged run like the "***" in **one***two*, picking up a neighbour's marks.
+		const visibleFrom = hidden.find(hidden => hidden.from <= range.from && hidden.to > range.from)?.to ?? range.from;
+		const visibleTo = hidden.find(hidden => hidden.from < range.to && hidden.to >= range.to)?.from ?? range.to;
+		if (visibleFrom >= visibleTo) return range;
+
+		let from = visibleFrom;
+		let to = visibleTo;
 		for (const { ownerFrom, ownerTo } of hiddenSyntax) {
-			if (ownerFrom >= range.to || ownerTo <= range.from) continue;
+			if (ownerFrom >= visibleTo || ownerTo <= visibleFrom) continue;
 			if (ownerFrom >= from && ownerTo <= to) continue;
 
 			// Trim *all* hidden syntax at the owner's edges, including nested
@@ -38,7 +45,7 @@ const normalizeRenderedSelection = (selection: EditorSelection, hiddenSyntax: re
 			const suffix = hidden.find(hidden => hidden.from < ownerTo && hidden.to >= ownerTo);
 			const contentFrom = prefix ? Math.min(prefix.to, ownerTo) : ownerFrom;
 			const contentTo = suffix ? Math.max(suffix.from, ownerFrom) : ownerTo;
-			if (contentFrom < contentTo && range.from <= contentFrom && range.to >= contentTo) {
+			if (contentFrom < contentTo && visibleFrom <= contentFrom && visibleTo >= contentTo) {
 				from = Math.min(from, ownerFrom);
 				to = Math.max(to, ownerTo);
 			}

@@ -25,6 +25,7 @@ describe('renderedSelection', () => {
 		{ markdown: 'This is **bold** text', from: 0, to: 12, expected: 'This is **bo' },
 		{ markdown: '**one***two*', from: 2, to: 5, expected: '**one**' },
 		{ markdown: '**one***two*', from: 8, to: 11, expected: '*two*' },
+		{ markdown: '**one***two*', from: 5, to: 12, expected: '*two*' },
 		{ markdown: '# **Heading**', from: 4, to: 11, expected: '# **Heading**' },
 		{ markdown: '# Heading text', from: 2, to: 9, expected: 'Heading' },
 		{ markdown: '[**bold**](https://example.com)', from: 3, to: 7, expected: '[**bold**](https://example.com)' },
